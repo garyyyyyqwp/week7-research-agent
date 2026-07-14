@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>研报平台技术预研 — Week 6 Demo</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+:root {
+  --bg-0: #0a0a0f; --bg-1: #111118; --bg-2: #18181f; --bg-3: #1e1e28;
+  --text-1: #e8e8ed; --text-2: #a0a0b0; --text-3: #6b6b7b;
+  --accent: #3b82f6; --accent2: #8b5cf6; --green: #10b981; --red: #ef4444;
+  --radius: 8px; --radius-sm: 5px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font);background:var(--bg-0);color:var(--text-1);min-height:100vh}
+button{cursor:pointer;border:none;font-family:var(--font);color:inherit}
+input,textarea{font-family:var(--font);background:var(--bg-2);border:1px solid rgba(255,255,255,.08);color:var(--text-1);border-radius:var(--radius-sm);padding:10px 14px;outline:none;font-size:14px;width:100%}
+textarea{resize:none;line-height:1.5}
+
+/* Layout */
+.app{max-width:960px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:20px;min-height:100vh}
+@media(max-width:768px){.app{grid-template-columns:1fr}}
+
+/* Panels */
+.panel{background:var(--bg-1);border:1px solid rgba(255,255,255,.06);border-radius:var(--radius);padding:20px;display:flex;flex-direction:column;gap:14px;max-height:calc(100vh - 40px);overflow:hidden}
+.panel-header{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;flex-shrink:0}
+.panel-header .badge{font-size:10px;background:var(--accent);padding:2px 8px;border-radius:10px;color:#fff}
+
+/* Left panel: Input + Controls */
+.input-group{display:flex;flex-direction:column;gap:8px;flex-shrink:0}
+.input-group label{font-size:12px;color:var(--text-2);font-weight:500}
+.btn-generate{padding:12px;background:var(--accent);color:#fff;border-radius:var(--radius);font-size:14px;font-weight:600;transition:opacity .15s;width:100%}
+.btn-generate:hover{opacity:.85}
+.btn-generate:disabled{opacity:.4;cursor:not-allowed}
+
+/* Status */
+.status-bar{font-size:12px;color:var(--text-3);display:flex;align-items:center;gap:6px;min-height:20px;flex-shrink:0}
+.status-bar .dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+.status-bar .dot.idle{background:var(--text-3)}
+.status-bar .dot.working{background:var(--green);animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* Outline preview */
+.outline-preview{max-height:200px;overflow-y:auto;flex-shrink:0}
+.outline-item{font-size:12px;padding:6px 10px;border-left:2px solid var(--bg-3);margin-bottom:4px;color:var(--text-2);transition:all .2s}
+.outline-item.active{border-left-color:var(--accent);color:var(--text-1);background:rgba(59,130,246,.05)}
+.outline-item.done{border-left-color:var(--green);color:var(--green)}
+
+/* Right panel: Report viewer */
+.report-viewer{flex:1;overflow-y:auto;background:var(--bg-2);border-radius:var(--radius-sm);padding:20px;font-size:14px;line-height:1.8}
+.report-viewer:empty::after{content:'点击「生成研报」开始...';color:var(--text-3);display:block;text-align:center;padding:50px 0}
+.report-viewer h1{font-size:22px;margin-bottom:12px;border-bottom:2px solid rgba(255,255,255,.08);padding-bottom:10px}
+.report-viewer h2{font-size:17px;margin:24px 0 10px;color:var(--accent2)}
+.report-viewer h3{font-size:15px;margin:16px 0 8px}
+.report-viewer p{margin:8px 0}
+.report-viewer ul,.report-viewer ol{padding-left:20px;margin:8px 0}
+.report-viewer li{margin:4px 0}
+.report-viewer blockquote{border-left:3px solid var(--accent);padding:8px 14px;margin:12px 0;background:rgba(59,130,246,.05);border-radius:0 var(--radius-sm) var(--radius-sm) 0;color:var(--text-2)}
+.report-viewer table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13px}
+.report-viewer th,.report-viewer td{border:1px solid rgba(255,255,255,.08);padding:6px 10px;text-align:left}
+.report-viewer th{background:var(--bg-3)}
+.report-viewer code{font-family:var(--font-mono);background:var(--bg-3);padding:1px 5px;border-radius:3px;font-size:12px}
+.report-viewer pre{background:var(--bg-0);padding:12px;border-radius:var(--radius-sm);overflow-x:auto;font-size:12px;margin:10px 0}
+.report-viewer .section-current{animation:fadeIn .3s}
+@keyframes fadeIn{from{opacity:.5;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+/* Refine popover */
+.refine-popover{display:none;position:fixed;background:var(--bg-3);border:1px solid rgba(255,255,255,.12);border-radius:var(--radius);padding:8px;box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:999;gap:6px;flex-direction:column;min-width:200px}
+.refine-popover.visible{display:flex}
+.refine-popover select,.refine-popover button{font-size:12px;padding:6px 10px;border-radius:var(--radius-sm)}
+.refine-popover select{background:var(--bg-2);border:1px solid rgba(255,255,255,.08);color:var(--text-1)}
+.refine-popover .btn-refine{background:var(--accent2);color:#fff;font-weight:500}
+.refine-popover .btn-refine:hover{opacity:.85}
+.refine-popover .btn-refine:disabled{opacity:.4}
+.refine-status{font-size:11px;color:var(--text-3)}
+
+/* Export buttons */
+.export-row{display:flex;gap:8px;flex-shrink:0}
+.btn-export{padding:6px 14px;background:var(--bg-2);border:1px solid rgba(255,255,255,.08);color:var(--text-2);border-radius:20px;font-size:12px;transition:all .15s}
+.btn-export:hover{color:var(--text-1);border-color:rgba(255,255,255,.2)}
+.btn-export:disabled{opacity:.3;cursor:not-allowed}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Left Panel -->
+  <div class="panel">
+    <div class="panel-header">
+      📝 研报生成 <span class="badge">SSE 流式</span>
+    </div>
+
+    <div class="input-group">
+      <label>研究主题</label>
+      <textarea id="topicInput" rows="2" placeholder="例如：人工智能在医疗领域的应用现状与发展趋势">人工智能在医疗领域的发展现状与未来趋势</textarea>
+    </div>
+
+    <div class="input-group" style="flex-direction:row;gap:12px">
+      <div style="flex:1">
+        <label>章节数</label>
+        <input type="number" id="numSections" value="5" min="2" max="10">
+      </div>
+      <div style="flex:1">
+        <label>语言</label>
+        <select id="langSelect" style="font-family:var(--font);background:var(--bg-2);border:1px solid rgba(255,255,255,.08);color:var(--text-1);border-radius:var(--radius-sm);padding:10px 14px;font-size:14px;width:100%">
+          <option value="zh-CN">中文</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="btn-generate" id="btnGenerate" onclick="generateReport()">⚡ 生成研报</button>
+
+    <div class="status-bar">
+      <span class="dot idle" id="statusDot"></span>
+      <span id="statusText">就绪</span>
+    </div>
+
+    <div class="outline-preview" id="outlinePreview"></div>
+
+    <div class="export-row">
+      <button class="btn-export" id="btnExportMd" disabled onclick="exportReport('md')">📥 导出 Markdown</button>
+      <button class="btn-export" id="btnExportPdf" disabled onclick="exportReport('pdf')">📄 导出 PDF</button>
+    </div>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="panel">
+    <div class="panel-header">
+      📄 报告预览
+    </div>
+    <div class="report-viewer" id="reportViewer"></div>
+  </div>
+</div>
+
+<!-- Refine Popover -->
+<div class="refine-popover" id="refinePopover">
+  <select id="refineInstruction">
+    <option value="使这段文字更加严谨和学术化">更严谨学术</option>
+    <option value="简化这段文字，使其更易理解">简化表达</option>
+    <option value="扩展这段文字，增加更多细节">扩展细节</option>
+    <option value="用更流畅的中文改写这段文字">流畅改写</option>
+    <option value="将这段文字改得更适合研究报告风格">研究报告风格</option>
+  </select>
+  <button class="btn-refine" id="btnRefine" onclick="doRefine()">✨ 优化</button>
+  <div class="refine-status" id="refineStatus"></div>
+</div>
+
+<script>
+// =========================================================================
+// State
+// =========================================================================
+let reportMarkdown = '';
+let reportJson = null;
+let selectedText = '';
+let selectedRange = null;
+
+// =========================================================================
+// Report Generation
+// =========================================================================
+async function generateReport() {
+  const topic = document.getElementById('topicInput').value.trim();
+  const numSections = parseInt(document.getElementById('numSections').value) || 5;
+  const language = document.getElementById('langSelect').value;
+
+  if (!topic) return;
+
+  // Reset state
+  reportMarkdown = '';
+  reportJson = null;
+  document.getElementById('reportViewer').innerHTML = '';
+  document.getElementById('outlinePreview').innerHTML = '';
+  document.getElementById('btnExportMd').disabled = true;
+  document.getElementById('btnExportPdf').disabled = true;
+
+  // UI: working state
+  const btn = document.getElementById('btnGenerate');
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中...';
+  document.getElementById('statusDot').className = 'dot working';
+  document.getElementById('statusText').textContent = '正在生成大纲...';
+
+  try {
+    const resp = await fetch('/api/v1/report/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({topic, num_sections: numSections, language}),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = '';
+    let sectionContents = {};
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          currentEvent = line.slice(6).trim();
+        } else if (line.startsWith('data:') && currentEvent) {
+          try {
+            const data = JSON.parse(line.slice(5).trim());
+            handleSSEEvent(currentEvent, data, sectionContents);
+          } catch(e) {
+            console.warn('SSE parse error:', e, 'line:', line.slice(0, 100));
+          }
+          currentEvent = '';
+        }
+      }
+    }
+  } catch(e) {
+    document.getElementById('statusText').textContent = `错误: ${e.message}`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = '⚡ 生成研报';
+  document.getElementById('statusDot').className = 'dot idle';
+  document.getElementById('statusText').textContent = '完成';
+  document.getElementById('btnExportMd').disabled = false;
+  document.getElementById('btnExportPdf').disabled = false;
+}
+
+function handleSSEEvent(event, data, sectionContents) {
+  const statusText = document.getElementById('statusText');
+  const outlinePreview = document.getElementById('outlinePreview');
+
+  switch(event) {
+    case 'status':
+      statusText.textContent = data.message;
+      break;
+
+    case 'outline':
+      // Show outline
+      const sections = data.sections || [];
+      outlinePreview.innerHTML = sections.map((s, i) =>
+        `<div class="outline-item" id="outline-${i}">${i+1}. ${s.title}</div>`
+      ).join('');
+      statusText.textContent = `大纲: ${data.count} 个章节`;
+      break;
+
+    case 'section_start':
+      // Highlight current section in outline
+      document.querySelectorAll('.outline-item').forEach(el => el.classList.remove('active'));
+      const outlineItem = document.getElementById(`outline-${data.index}`);
+      if (outlineItem) outlineItem.classList.add('active');
+
+      // Add section header to report
+      const viewer = document.getElementById('reportViewer');
+      const secDiv = document.createElement('div');
+      secDiv.className = 'section-current';
+      secDiv.id = `section-${data.index}`;
+      secDiv.innerHTML = `<h2>${data.title}</h2><div id="section-content-${data.index}"></div>`;
+      viewer.appendChild(secDiv);
+      sectionContents[data.index] = '';
+      statusText.textContent = `正在撰写: ${data.title}`;
+      break;
+
+    case 'section_chunk':
+      // Append streaming content
+      if (!sectionContents[data.index]) sectionContents[data.index] = '';
+      sectionContents[data.index] += data.chunk;
+
+      const contentDiv = document.getElementById(`section-content-${data.index}`);
+      if (contentDiv) {
+        contentDiv.innerHTML = marked.parse(sectionContents[data.index]);
+      }
+      // Scroll to bottom
+      document.getElementById('reportViewer').scrollTop =
+        document.getElementById('reportViewer').scrollHeight;
+      break;
+
+    case 'section_end':
+      // Mark section done in outline
+      const doneItem = document.getElementById(`outline-${data.index}`);
+      if (doneItem) { doneItem.classList.remove('active'); doneItem.classList.add('done'); }
+
+      // Save full content
+      sectionContents[data.index] = data.content;
+      reportJson = data;
+      break;
+
+    case 'abstract':
+      // Prepend abstract
+      const absDiv = document.createElement('div');
+      absDiv.innerHTML = `<blockquote><strong>摘要:</strong> ${data.abstract}</blockquote>`;
+      const v = document.getElementById('reportViewer');
+      const firstH2 = v.querySelector('h2');
+      if (firstH2) {
+        v.insertBefore(absDiv, firstH2);
+      }
+      break;
+
+    case 'references':
+      // Append references
+      const refDiv = document.createElement('div');
+      refDiv.innerHTML = marked.parse(data.references || '');
+      document.getElementById('reportViewer').appendChild(refDiv);
+      break;
+
+    case 'report_complete':
+      reportMarkdown = data.markdown || '';
+      reportJson = data.report || null;
+
+      // Re-render the entire viewer with proper markdown
+      // (Keep the streaming content since it's already nicely formatted)
+      document.querySelectorAll('.section-current').forEach(el => el.classList.remove('section-current'));
+      document.getElementById('btnExportMd').disabled = false;
+      document.getElementById('btnExportPdf').disabled = false;
+      statusText.textContent = `✅ 报告完成 (${data.report?.sections?.length || 0} 个章节)`;
+      break;
+
+    case 'done':
+      document.getElementById('statusDot').className = 'dot idle';
+      break;
+  }
+}
+
+// =========================================================================
+// Text Selection & Refine
+// =========================================================================
+document.getElementById('reportViewer').addEventListener('mouseup', function(e) {
+  const selection = window.getSelection();
+  const text = selection.toString().trim();
+
+  if (text && text.length > 5) {
+    selectedText = text;
+    selectedRange = selection.getRangeAt(0);
+
+    // Position popover near selection
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    const popover = document.getElementById('refinePopover');
+
+    let top = rect.bottom + window.scrollY + 8;
+    let left = rect.left + window.scrollX;
+
+    // Keep in viewport
+    if (left + 200 > window.innerWidth) left = window.innerWidth - 220;
+    if (top + 100 > window.innerHeight) top = rect.top + window.scrollY - 108;
+
+    popover.style.top = top + 'px';
+    popover.style.left = left + 'px';
+    popover.classList.add('visible');
+  } else {
+    document.getElementById('refinePopover').classList.remove('visible');
+  }
+});
+
+// Hide popover when clicking elsewhere
+document.addEventListener('mousedown', function(e) {
+  if (!e.target.closest('.refine-popover') && !e.target.closest('#reportViewer')) {
+    document.getElementById('refinePopover').classList.remove('visible');
+  }
+});
+
+async function doRefine() {
+  if (!selectedText) return;
+
+  const instruction = document.getElementById('refineInstruction').value;
+  const btn = document.getElementById('btnRefine');
+  const status = document.getElementById('refineStatus');
+
+  btn.disabled = true;
+  status.textContent = '优化中...';
+
+  try {
+    const resp = await fetch('/api/v1/report/refine', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        selected_text: selectedText,
+        context_before: '',
+        context_after: '',
+        instruction: instruction,
+      }),
+    });
+
+    const data = await resp.json();
+    const refinedText = data.refined_text;
+
+    // Replace selected text
+    if (selectedRange) {
+      const textNode = selectedRange.startContainer;
+      if (textNode.nodeType === Node.TEXT_NODE) {
+        const start = selectedRange.startOffset;
+        const end = selectedRange.endOffset;
+        const parent = textNode.parentNode;
+        const before = textNode.textContent.slice(0, start);
+        const after = textNode.textContent.slice(end);
+
+        // Create new nodes
+        const span = document.createElement('span');
+        span.textContent = refinedText;
+        span.style.background = 'rgba(139,92,246,.15)';
+        span.style.borderRadius = '3px';
+        span.style.padding = '1px 2px';
+        span.title = `优化: ${instruction}`;
+
+        parent.replaceChild(span, textNode);
+        parent.insertBefore(document.createTextNode(before), span);
+        parent.insertAfter(document.createTextNode(after), span);
+      }
+    }
+
+    status.textContent = '✅ 已优化';
+    document.getElementById('refinePopover').classList.remove('visible');
+
+  } catch(e) {
+    status.textContent = `失败: ${e.message}`;
+  }
+
+  btn.disabled = false;
+}
+
+// Polyfill: insertAfter
+if (!Node.prototype.insertAfter) {
+  Node.prototype.insertAfter = function(newNode, refNode) {
+    this.insertBefore(newNode, refNode.nextSibling);
+  };
+}
+
+// =========================================================================
+// Export
+// =========================================================================
+async function exportReport(format) {
+  if (!reportJson) return;
+
+  if (format === 'md') {
+    // Client-side download — reconstruct markdown from report JSON
+    let md = `# ${reportJson.title || '研报'}\n\n`;
+    if (reportJson.abstract) md += `> **摘要**: ${reportJson.abstract}\n\n`;
+
+    if (reportJson.sections) {
+      reportJson.sections.forEach((sec, i) => {
+        md += `## ${sec.title}\n\n${sec.content}\n\n`;
+      });
+    }
+
+    const blob = new Blob([md], {type: 'text/markdown'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `report_${Date.now()}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+  } else if (format === 'pdf') {
+    // window.print() approach — zero dependency
+    const viewer = document.getElementById('reportViewer');
+    const html = viewer.innerHTML;
+
+    const printWindow = window.open('', '_blank', 'width=800,height=600');
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html><head><meta charset="UTF-8">
+      <title>研报导出</title>
+      <style>
+        body { font-family: 'PingFang SC','Microsoft YaHei',sans-serif;
+               font-size: 14px; line-height: 2; max-width: 800px; margin: 0 auto; padding: 40px; color: #222; }
+        h1 { font-size: 24px; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        h2 { font-size: 18px; margin-top: 24px; color: #333; }
+        h3 { font-size: 16px; }
+        blockquote { border-left: 3px solid #666; padding: 8px 16px; color: #555; margin: 12px 0; }
+        table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+        th, td { border: 1px solid #ccc; padding: 6px 10px; }
+        th { background: #f0f0f0; }
+        pre { background: #f5f5f5; padding: 12px; border-radius: 4px; }
+        code { background: #f5f5f5; padding: 1px 4px; }
+        @media print {
+          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        }
+      </style></head>
+      <body>${html}</body></html>
+    `);
+    printWindow.document.close();
+    setTimeout(() => printWindow.print(), 500);
+  }
+}
+
+// Init: show ready state
+document.getElementById('statusText').textContent = '就绪 — 输入主题后点击生成';
+</script>
+</body>
+</html>

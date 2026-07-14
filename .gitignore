@@ -1,0 +1,14 @@
+# Dependencies
+.venv/
+__pycache__/
+*.pyc
+.env
+chroma_data/
+data/sessions/
+data/mm_sessions/
+data/images/
+data/audio/
+
+# IDE
+.vscode/
+.idea/

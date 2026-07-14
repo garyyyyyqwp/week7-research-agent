@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>研究报告智能体 — Week 7</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+:root {
+  --bg-0: #0a0a0f; --bg-1: #111118; --bg-2: #18181f; --bg-3: #1e1e28;
+  --text-1: #e8e8ed; --text-2: #a0a0b0; --text-3: #6b6b7b;
+  --accent: #3b82f6; --accent2: #8b5cf6; --green: #10b981;
+  --yellow: #f59e0b; --red: #ef4444;
+  --radius: 8px; --radius-sm: 5px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+
+body {
+  font-family: var(--font);
+  background: var(--bg-0);
+  color: var(--text-1);
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+button { cursor:pointer; border:none; font-family:var(--font); color:inherit; }
+input, textarea, select {
+  font-family: var(--font);
+  background: var(--bg-2);
+  border: 1px solid rgba(255,255,255,.08);
+  color: var(--text-1);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  outline: none;
+  font-size: 14px;
+  width: 100%;
+}
+textarea { resize: none; line-height: 1.5; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* ======= Layout: CSS Grid dual-panel ======= */
+.app {
+  display: grid;
+  grid-template-columns: 420px 1fr;
+  gap: 0;
+  height: 100vh;
+  max-width: 100vw;
+}
+/* Right panel gets max-width centering inside its column */
+@media (max-width: 1100px) {
+  .app { grid-template-columns: 360px 1fr; }
+}
+@media (max-width: 768px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; overflow-y: auto; }
+}
+
+/* ======= Left Panel ======= */
+.left-panel {
+  background: var(--bg-1);
+  border-right: 1px solid rgba(255,255,255,.06);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  height: 100vh;
+  overflow: hidden;
+}
+.left-panel-header {
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.left-panel-header .badge {
+  font-size: 10px;
+  background: var(--accent);
+  padding: 2px 8px;
+  border-radius: 10px;
+  color: #fff;
+}
+
+/* Input groups */
+.input-group { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
+.input-group label { font-size: 12px; color: var(--text-2); font-weight: 500; }
+.input-row { display: flex; gap: 10px; flex-shrink: 0; }
+.input-row > div { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.input-row label { font-size: 12px; color: var(--text-2); font-weight: 500; }
+
+/* Site checkboxes */
+.site-checks { display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+.site-checks label {
+  font-size: 11px;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 3px 8px;
+  background: var(--bg-2);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.06);
+  transition: all .15s;
+  user-select: none;
+}
+.site-checks label:has(input:checked) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(59,130,246,.08);
+}
+.site-checks input { width: auto; accent-color: var(--accent); }
+
+/* Buttons */
+.btn-row { display: flex; gap: 8px; flex-shrink: 0; }
+.btn-generate {
+  flex:1;
+  padding: 12px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 600;
+  transition: opacity .15s;
+}
+.btn-generate:hover { opacity: .85; }
+.btn-generate:disabled { opacity: .4; cursor: not-allowed; }
+.btn-stop {
+  padding: 12px 16px;
+  background: var(--red);
+  color: #fff;
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 600;
+  display: none;
+  transition: opacity .15s;
+}
+.btn-stop:hover { opacity: .85; }
+.btn-stop.visible { display: block; }
+
+/* Progress bar */
+.progress-bar-wrap {
+  flex-shrink: 0;
+  height: 4px;
+  background: var(--bg-2);
+  border-radius: 2px;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity .3s;
+}
+.progress-bar-wrap.visible { opacity: 1; }
+.progress-bar-inner {
+  height: 100%;
+  background: var(--accent2);
+  border-radius: 2px;
+  width: 0%;
+  transition: width .4s ease;
+}
+
+/* ======= Progress Log (left panel scroll area) ======= */
+.progress-log {
+  flex: 1;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+  background: var(--bg-2);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  min-height: 0;
+}
+.progress-log .line {
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(255,255,255,.02);
+}
+.progress-log .line .ts { color: var(--text-3); margin-right: 6px; }
+.progress-log .line .icon { margin-right: 4px; }
+.progress-log .line.info  { color: var(--text-2); }
+.progress-log .line.warn  { color: var(--yellow); }
+.progress-log .line.error { color: var(--red); }
+
+/* ======= Right Panel ======= */
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+.report-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: var(--bg-1);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  flex-shrink: 0;
+}
+.report-toolbar .report-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  margin-right: 16px;
+}
+.toolbar-btns { display: flex; gap: 8px; flex-shrink: 0; }
+.btn-tool {
+  padding: 6px 14px;
+  background: var(--bg-2);
+  border: 1px solid rgba(255,255,255,.08);
+  color: var(--text-2);
+  border-radius: 20px;
+  font-size: 12px;
+  transition: all .15s;
+}
+.btn-tool:hover { color: var(--text-1); border-color: rgba(255,255,255,.2); }
+.btn-tool:disabled { opacity: .3; cursor: not-allowed; }
+
+/* Warning banner (few sources) */
+.warning-banner {
+  display: none;
+  padding: 8px 24px;
+  background: rgba(245,158,11,.1);
+  border-bottom: 1px solid rgba(245,158,11,.2);
+  color: var(--yellow);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.warning-banner.visible { display: block; }
+
+/* ======= Report Viewer (right panel scroll area) ======= */
+.report-viewer {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 32px;
+  font-size: 14px;
+  line-height: 1.85;
+  max-width: 860px;
+  width: 100%;
+  align-self: center;
+}
+.report-viewer:empty::after {
+  content: '输入研究主题后点击「生成研报」开始...';
+  color: var(--text-3);
+  display: block;
+  text-align: center;
+  padding: 80px 0;
+  font-size: 14px;
+}
+.report-viewer h1 {
+  font-size: 24px;
+  margin-bottom: 14px;
+  border-bottom: 2px solid rgba(255,255,255,.08);
+  padding-bottom: 12px;
+}
+.report-viewer h2 { font-size: 18px; margin: 28px 0 12px; color: var(--accent2); }
+.report-viewer h3 { font-size: 15px; margin: 18px 0 8px; }
+.report-viewer p { margin: 8px 0; }
+.report-viewer ul, .report-viewer ol { padding-left: 22px; margin: 8px 0; }
+.report-viewer li { margin: 4px 0; }
+.report-viewer blockquote {
+  border-left: 3px solid var(--accent);
+  padding: 8px 14px;
+  margin: 12px 0;
+  background: rgba(59,130,246,.05);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-2);
+}
+.report-viewer table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.report-viewer th, .report-viewer td {
+  border: 1px solid rgba(255,255,255,.08);
+  padding: 6px 10px;
+  text-align: left;
+}
+.report-viewer th { background: var(--bg-3); }
+.report-viewer code {
+  font-family: var(--font-mono);
+  background: var(--bg-3);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.report-viewer pre {
+  background: var(--bg-0);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 12px;
+  margin: 10px 0;
+}
+.report-viewer .section-current { animation: fadeIn .3s; }
+@keyframes fadeIn {
+  from { opacity: .5; transform: translateY(4px); }
+  to   { opacity: 1;  transform: translateY(0); }
+}
+
+/* TOC (inside report viewer) */
+.report-toc {
+  background: var(--bg-2);
+  border-radius: var(--radius-sm);
+  padding: 14px 18px;
+  margin-bottom: 20px;
+}
+.report-toc .toc-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--text-2); }
+.report-toc a {
+  display: block;
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 3px 0;
+  transition: color .15s;
+}
+.report-toc a:hover { color: var(--accent2); }
+
+/* Citation hover tooltip */
+.citation-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  position: relative;
+}
+.citation-tooltip {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-3);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  min-width: 240px;
+  max-width: 360px;
+  font-size: 12px;
+  line-height: 1.5;
+  z-index: 1000;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  text-decoration: none;
+  color: var(--text-1);
+  pointer-events: none;
+}
+.citation-link:hover .citation-tooltip { display: block; }
+
+/* ======= Refine popover ======= */
+.refine-popover {
+  display: none;
+  position: fixed;
+  background: var(--bg-3);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: var(--radius);
+  padding: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  z-index: 999;
+  gap: 6px;
+  flex-direction: column;
+  min-width: 200px;
+}
+.refine-popover.visible { display: flex; }
+.refine-popover select, .refine-popover button {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+.refine-popover select {
+  background: var(--bg-2);
+  border: 1px solid rgba(255,255,255,.08);
+  color: var(--text-1);
+}
+.refine-popover .btn-refine { background: var(--accent2); color: #fff; font-weight: 500; }
+.refine-popover .btn-refine:hover { opacity: .85; }
+.refine-popover .btn-refine:disabled { opacity: .4; }
+.refine-popover .btn-undo { background: transparent; border: 1px solid rgba(255,255,255,.12); color: var(--text-2); }
+.refine-popover .btn-undo:hover { color: var(--text-1); }
+.refine-status { font-size: 11px; color: var(--text-3); }
+
+/* ======= Spinner ======= */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,.2);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ============================================================ -->
+  <!-- LEFT PANEL — input, controls, progress log                   -->
+  <!-- ============================================================ -->
+  <div class="left-panel">
+    <div class="left-panel-header">
+      📝 研究报告智能体 <span class="badge">Week 7</span>
+    </div>
+
+    <!-- Topic -->
+    <div class="input-group">
+      <label>研究主题</label>
+      <textarea id="topicInput" rows="2" placeholder="例如：Long COVID 的神经系统影响与最新治疗进展"></textarea>
+    </div>
+
+    <!-- Section count + Language -->
+    <div class="input-row">
+      <div>
+        <label>章节数 (2-8)</label>
+        <input type="number" id="numSections" value="5" min="2" max="8">
+      </div>
+      <div>
+        <label>语言</label>
+        <select id="langSelect">
+          <option value="zh-CN">中文</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Site checkboxes (populated from /api/v1/search/sites) -->
+    <div class="input-group">
+      <label>定向站点（不选=仅通用搜索）</label>
+      <div class="site-checks" id="siteChecks">
+        <span style="font-size:11px;color:var(--text-3)">加载中...</span>
+      </div>
+    </div>
+
+    <!-- Generate + Stop -->
+    <div class="btn-row">
+      <button class="btn-generate" id="btnGenerate">⚡ 生成研报</button>
+      <button class="btn-stop" id="btnStop" title="停止生成">⏹ 停止</button>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="progress-bar-wrap" id="progressWrap">
+      <div class="progress-bar-inner" id="progressBar"></div>
+    </div>
+
+    <!-- Progress log (scrollable) -->
+    <div class="progress-log" id="progressLog">
+      <div class="line"><span class="ts">--:--:--</span> 就绪，输入主题后点击生成。</div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- RIGHT PANEL — report viewer                                  -->
+  <!-- ============================================================ -->
+  <div class="right-panel">
+    <!-- Toolbar -->
+    <div class="report-toolbar">
+      <div class="report-title" id="reportTitle">研究报告预览</div>
+      <div class="toolbar-btns">
+        <button class="btn-tool" id="btnCopy" disabled title="复制全文到剪贴板">📋 复制</button>
+        <button class="btn-tool" id="btnExportMd" disabled>📥 下载 MD</button>
+        <button class="btn-tool" id="btnExportPdf" disabled>📄 导出 PDF</button>
+      </div>
+    </div>
+
+    <!-- Warning banner -->
+    <div class="warning-banner" id="warningBanner"></div>
+
+    <!-- Report content -->
+    <div class="report-viewer" id="reportViewer"></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- REFINE POPOVER                                               -->
+<!-- ============================================================ -->
+<div class="refine-popover" id="refinePopover">
+  <select id="refineInstruction">
+    <option value="使这段文字更加严谨和学术化">更学术严谨</option>
+    <option value="简化这段文字，使其更通俗易懂">更通俗易懂</option>
+    <option value="扩展这段文字，补充更多数据或案例支撑">补充数据支撑</option>
+    <option value="精简这段文字，删除冗余表达">精简表达</option>
+    <option value="用英文润色这段文字（输出英文）">英文润色</option>
+  </select>
+  <button class="btn-refine" id="btnRefine">✨ 优化</button>
+  <button class="btn-undo" id="btnUndo" style="display:none">↩ 撤销</button>
+  <div class="refine-status" id="refineStatus"></div>
+</div>
+
+<script>
+// =====================================================================
+// State
+// =====================================================================
+let reportMarkdown = '';
+let reportJson = null;
+let reportId = null;
+let selectedText = '';
+let selectedRange = null;
+let originalRefineText = null;       // single-level undo
+let originalRefineNode = null;       // DOM node before replacement
+let sectionContents = {};            // accumulated raw markdown per section
+let totalSections = 0;
+let aborted = false;
+let abortController = null;
+let reconnectAttempts = 0;
+let currentGenParams = null;
+
+// =====================================================================
+// Reconnect button
+// =====================================================================
+async function retryGenerate() {
+  if (!currentGenParams) return;
+  reconnectAttempts++;
+  addLogLine('🔄', `重新连接... (第 ${reconnectAttempts} 次)`, 'warn');
+  await generateReport(currentGenParams);
+}
+
+// =====================================================================
+// Init
+// =====================================================================
+(async function init() {
+  // Load site checkboxes
+  try {
+    const resp = await fetch('/api/v1/search/sites');
+    const data = await resp.json();
+    const container = document.getElementById('siteChecks');
+    if (data.sites && data.sites.length) {
+      container.innerHTML = data.sites.map(s =>
+        `<label><input type="checkbox" value="${s.id}"> ${s.name}</label>`
+      ).join('');
+    } else {
+      container.innerHTML = '<span style="font-size:11px;color:var(--text-3)">无可用站点</span>';
+    }
+  } catch(e) {
+    document.getElementById('siteChecks').innerHTML =
+      '<span style="font-size:11px;color:var(--text-3)">站点列表加载失败</span>';
+  }
+
+  // Stop button
+  document.getElementById('btnStop').addEventListener('click', () => {
+    aborted = true;
+    if (abortController) abortController.abort();
+    resetUI();
+  });
+
+  // Export buttons
+  document.getElementById('btnExportMd').addEventListener('click', () => exportReport('md'));
+  document.getElementById('btnExportPdf').addEventListener('click', () => exportReport('pdf'));
+  document.getElementById('btnCopy').addEventListener('click', copyReport);
+  document.getElementById('btnGenerate').addEventListener('click', generateReport);
+
+  // Allow Enter to trigger generate (Shift+Enter for newline)
+  document.getElementById('topicInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      generateReport();
+    }
+  });
+})();
+
+// =====================================================================
+// Generate Report
+// =====================================================================
+async function generateReport(overrideParams) {
+  const params = overrideParams || {
+    topic: document.getElementById('topicInput').value.trim(),
+    numSections: parseInt(document.getElementById('numSections').value) || 5,
+    language: document.getElementById('langSelect').value,
+    enabledSites: Array.from(document.querySelectorAll('#siteChecks input:checked')).map(cb => cb.value),
+  };
+  if (!params.topic) return;
+
+  // Save for retry
+  currentGenParams = params;
+  if (!overrideParams) reconnectAttempts = 0;
+
+  // Reset state
+  aborted = false;
+  abortController = new AbortController();
+  reportMarkdown = '';
+  reportJson = null;
+  reportId = null;
+  sectionContents = {};
+  totalSections = 0;
+  if (!params) {
+    document.getElementById('reportViewer').innerHTML = '';
+    document.getElementById('reportTitle').textContent = '研究报告预览';
+    document.getElementById('warningBanner').classList.remove('visible');
+    document.getElementById('progressLog').innerHTML = '';
+    addLogLine('🚀', `开始研究: ${params.topic}`, 'info');
+  } else {
+    addLogLine('🔄', `重新尝试生成...`, 'warn');
+  }
+
+  document.getElementById('btnExportMd').disabled = true;
+  document.getElementById('btnExportPdf').disabled = true;
+  document.getElementById('btnCopy').disabled = true;
+
+  // UI: working state
+  const btnGen = document.getElementById('btnGenerate');
+  const btnStop = document.getElementById('btnStop');
+  btnGen.disabled = true;
+  btnGen.textContent = '⏳ 生成中...';
+  btnStop.classList.add('visible');
+  document.getElementById('progressWrap').classList.add('visible');
+  document.getElementById('progressBar').style.width = '0%';
+
+  try {
+    const resp = await fetch('/api/v1/report/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic: params.topic,
+        num_sections: params.numSections,
+        language: params.language,
+        enabled_sites: params.enabledSites,
+        include_references: true,
+      }),
+      signal: abortController.signal,
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          currentEvent = line.slice(6).trim();
+        } else if (line.startsWith('data:') && currentEvent) {
+          try {
+            const data = JSON.parse(line.slice(5).trim());
+            if (!aborted) handleSSEEvent(currentEvent, data);
+          } catch (e) {
+            // non-JSON data — skip silently (could be heartbeat)
+          }
+          currentEvent = '';
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      addLogLine('⏹', '用户停止生成', 'warn');
+    } else {
+      addLogLine('❌', `连接错误: ${e.message}`, 'error');
+      addLogLine('🔄', '点击「生成研报」重试，或检查网络连接', 'warn');
+    }
+  }
+
+  if (!aborted) resetUI();
+}
+
+function resetUI() {
+  const btnGen = document.getElementById('btnGenerate');
+  const btnStop = document.getElementById('btnStop');
+  btnGen.disabled = false;
+  btnGen.textContent = '⚡ 生成研报';
+  btnStop.classList.remove('visible');
+  document.getElementById('progressWrap').classList.remove('visible');
+}
+
+function addLogLine(icon, message, cls, tsIso) {
+  const log = document.getElementById('progressLog');
+  const now = new Date();
+  const ts = tsIso
+    ? new Date(tsIso).toTimeString().slice(0, 8)
+    : now.toTimeString().slice(0, 8);
+  const div = document.createElement('div');
+  div.className = 'line' + (cls ? ' ' + cls : '');
+  div.innerHTML = `<span class="ts">${ts}</span><span class="icon">${icon}</span>${escapeHtml(message)}`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+// =====================================================================
+// SSE Event Handler
+// =====================================================================
+function handleSSEEvent(event, data) {
+  switch (event) {
+
+    // ---- Phase 1: Research ----
+    case 'research_start':
+      addLogLine('🔬', `研究阶段开始，站点: ${(data.sites||[]).join(', ') || '通用搜索'}`, 'info');
+      break;
+
+    case 'research_progress':
+      // {ts, icon, message} — real-time log from ResearchEngine
+      {
+        const msg = data.message || '';
+        const cls = msg.includes('超时') || msg.includes('失败') ? 'warn'
+                  : msg.includes('跳过') ? 'info'
+                  : 'info';
+        addLogLine(data.icon || '•', msg, cls, data.ts);
+      }
+      break;
+
+    case 'research_done':
+      // {sources, elapsed_s}
+      addLogLine('📊', `研究完成: ${data.sources} 个来源 (${data.elapsed_s}s)`, 'info');
+      break;
+
+    // ---- Warning ----
+    case 'warning':
+      if (data.code === 'few_sources') {
+        const banner = document.getElementById('warningBanner');
+        banner.textContent = `⚠️ 数据来源较少（${data.count || 0} 个），内容可能不够全面`;
+        banner.classList.add('visible');
+      }
+      addLogLine('⚠️', data.message || data.code || '警告', 'warn');
+      break;
+
+    // ---- Phase 2: Outline ----
+    case 'outline':
+      // {topic, sections:[{title,description,source_indices}], count}
+      totalSections = data.count || 0;
+      document.getElementById('reportTitle').textContent = data.topic || '研究报告';
+      document.getElementById('progressBar').style.width = '0%';
+      addLogLine('📋', `大纲生成完成: ${totalSections} 个章节`, 'info');
+
+      // Render report title + TOC in viewer
+      const viewer = document.getElementById('reportViewer');
+      viewer.innerHTML = '';
+
+      // Title
+      const h1 = document.createElement('h1');
+      h1.textContent = data.topic || '研究报告';
+      viewer.appendChild(h1);
+
+      // TOC
+      if (data.sections && data.sections.length) {
+        const tocDiv = document.createElement('div');
+        tocDiv.className = 'report-toc';
+        tocDiv.innerHTML = '<div class="toc-title">📑 目录</div>';
+        data.sections.forEach((s, i) => {
+          tocDiv.innerHTML += `<a href="#section-${i}" onclick="scrollToSection(${i});return false">${i+1}. ${escapeHtml(s.title)}</a>`;
+        });
+        viewer.appendChild(tocDiv);
+      }
+      break;
+
+    // ---- Phase 3: Section Writing ----
+    case 'section_start':
+      // {index, title, total}
+      {
+        const pct = totalSections ? Math.round((data.index / totalSections) * 100) : 0;
+        document.getElementById('progressBar').style.width = pct + '%';
+        addLogLine('✍️', `正在撰写: ${data.title} (第 ${data.index+1}/${data.total} 节)`, 'info');
+
+        const v = document.getElementById('reportViewer');
+        const secDiv = document.createElement('div');
+        secDiv.className = 'section-current';
+        secDiv.id = `section-${data.index}`;
+        secDiv.innerHTML = `<h2 id="section-heading-${data.index}">${escapeHtml(data.title)}</h2>
+                            <div id="section-content-${data.index}"></div>`;
+        v.appendChild(secDiv);
+        sectionContents[data.index] = '';
+      }
+      break;
+
+    case 'section_chunk':
+      // {index, chunk}
+      if (!sectionContents[data.index]) sectionContents[data.index] = '';
+      sectionContents[data.index] += data.chunk;
+
+      // Incremental render with marked.js
+      // Render then wrap citation refs [n] into clickable/hoverable links
+      {
+        const contentDiv = document.getElementById(`section-content-${data.index}`);
+        if (contentDiv) {
+          let html = marked.parse(sectionContents[data.index]);
+          // Make citation markers [n] into interactive elements
+          html = html.replace(/\[(\d+)\]/g, (m, num) =>
+            `<sup class="citation-link">[${num}]<span class="citation-tooltip">引用 [${num}]</span></sup>`
+          );
+          contentDiv.innerHTML = html;
+        }
+      }
+      // Auto-scroll to current section bottom
+      {
+        const viewer = document.getElementById('reportViewer');
+        viewer.scrollTop = viewer.scrollHeight;
+      }
+      break;
+
+    case 'section_end':
+      // {index, title, content, citations:[int]}
+      {
+        const pct = totalSections ? Math.round(((data.index + 1) / totalSections) * 100) : 0;
+        document.getElementById('progressBar').style.width = pct + '%';
+
+        const secEl = document.getElementById(`section-${data.index}`);
+        if (secEl) secEl.classList.remove('section-current');
+
+        addLogLine('✅', `完成: ${data.title} (引用${data.citations?.length || 0}条)`, 'info');
+
+        // Re-render final content cleanly with marked + citation links
+        const contentDiv = document.getElementById(`section-content-${data.index}`);
+        if (contentDiv && data.content) {
+          let html = marked.parse(data.content);
+          html = html.replace(/\[(\d+)\]/g, (m, num) =>
+            `<sup class="citation-link">[${num}]<span class="citation-tooltip">引用 [${num}]</span></sup>`
+          );
+          contentDiv.innerHTML = html;
+        }
+        sectionContents[data.index] = data.content;
+      }
+      break;
+
+    // ---- Phase 4: Post-processing ----
+    case 'abstract':
+      // {abstract}
+      {
+        const v2 = document.getElementById('reportViewer');
+        const absDiv = document.createElement('div');
+        absDiv.innerHTML = `<blockquote><strong>📄 摘要:</strong> ${escapeHtml(data.abstract)}</blockquote>`;
+        // Insert after h1, before TOC or first section
+        const toc = v2.querySelector('.report-toc');
+        const firstSec = v2.querySelector('[id^="section-"]');
+        if (toc) {
+          v2.insertBefore(absDiv, toc.nextSibling);
+        } else if (firstSec) {
+          v2.insertBefore(absDiv, firstSec);
+        }
+      }
+      break;
+
+    case 'references':
+      // {references:markdown, citations_json:{count,citations:[]}}
+      {
+        const v3 = document.getElementById('reportViewer');
+        const refDiv = document.createElement('div');
+        let refHtml = marked.parse(data.references || '');
+        refDiv.innerHTML = refHtml;
+        v3.appendChild(refDiv);
+
+        addLogLine('📚', `参考文献: ${data.citations_json?.count || 0} 条`, 'info');
+
+        // Populate citation tooltips with real source info
+        if (data.citations_json && data.citations_json.citations) {
+          setTimeout(() => populateCitationTooltips(data.citations_json.citations), 200);
+        }
+      }
+      break;
+
+    case 'report_complete':
+      // {report:{...}, markdown, report_id}
+      reportMarkdown = data.markdown || '';
+      reportJson = data.report || null;
+      reportId = data.report_id || null;
+
+      document.getElementById('progressBar').style.width = '100%';
+      document.getElementById('btnExportMd').disabled = false;
+      document.getElementById('btnExportPdf').disabled = false;
+      document.getElementById('btnCopy').disabled = false;
+      addLogLine('🎉', `报告完成! ${data.report?.sections?.length || 0} 个章节`, 'info');
+      break;
+
+    case 'done':
+      // {report_id, sources, sections, elapsed_s}
+      document.getElementById('progressWrap').classList.remove('visible');
+      addLogLine('✅', `全部完成 (${data.sections || 0}节, ${data.sources || 0}源, ${data.elapsed_s || '?'}s)`, 'info');
+      break;
+
+    // ---- Error ----
+    case 'error':
+      // {message, phase, detail?}
+      const phaseMap = {
+        'research': '研究阶段',
+        'outline': '大纲生成',
+        'section': '章节撰写',
+        'pipeline': '管道执行',
+        'generate': '报告生成',
+      };
+      addLogLine('❌', `${data.message} (${phaseMap[data.phase] || data.phase || '未知阶段'})`, 'error');
+      addLogLine('🔄', '点击「生成研报」重试', 'warn');
+      break;
+  }
+}
+
+// =====================================================================
+// Citation tooltips — fill with real source info
+// =====================================================================
+function populateCitationTooltips(citations) {
+  if (!citations || !citations.length) return;
+  const idxMap = {};
+  citations.forEach(c => { idxMap[c.index] = c; });
+
+  document.querySelectorAll('.citation-link').forEach(el => {
+    const m = el.textContent.match(/\[(\d+)\]/);
+    if (!m) return;
+    const idx = parseInt(m[1]);
+    const c = idxMap[idx];
+    if (!c) return;
+    const tip = el.querySelector('.citation-tooltip');
+    if (tip) {
+      tip.innerHTML = `<strong>${escapeHtml(c.title || '')}</strong><br>
+                       <span style="color:var(--text-3);font-size:11px">${escapeHtml(c.site_name || '')} · ${escapeHtml(c.url || '')}</span>`;
+    }
+  });
+}
+
+function scrollToSection(index) {
+  const target = document.getElementById(`section-heading-${index}`);
+  if (target) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+// =====================================================================
+// Text Selection & Refine (with single-level undo)
+// =====================================================================
+document.getElementById('reportViewer').addEventListener('mouseup', function(e) {
+  // Debounce: ignore immediate re-trigger
+  setTimeout(() => {
+    const selection = window.getSelection();
+    const text = selection.toString().trim();
+
+    if (text && text.length > 5) {
+      selectedText = text;
+      selectedRange = selection.getRangeAt(0);
+
+      const rect = selection.getRangeAt(0).getBoundingClientRect();
+      const popover = document.getElementById('refinePopover');
+      const popoverWidth = 210;
+
+      let top = rect.bottom + window.scrollY + 8;
+      let left = rect.left + window.scrollX;
+
+      // Keep in viewport — prefer right side of selection, clamp to window
+      if (left + popoverWidth > window.innerWidth) left = window.innerWidth - popoverWidth - 10;
+      if (left < 10) left = 10;
+      if (top + 180 > window.innerHeight) top = rect.top + window.scrollY - 170;
+
+      popover.style.top = top + 'px';
+      popover.style.left = left + 'px';
+      popover.classList.add('visible');
+    } else {
+      document.getElementById('refinePopover').classList.remove('visible');
+    }
+  }, 10);
+});
+
+// Hide popover when clicking elsewhere
+document.addEventListener('mousedown', function(e) {
+  if (!e.target.closest('.refine-popover') && !e.target.closest('#reportViewer')) {
+    document.getElementById('refinePopover').classList.remove('visible');
+  }
+});
+
+async function doRefine(undoMode) {
+  // undoMode: if true, restore original text
+  if (undoMode) {
+    if (originalRefineNode && originalRefineText !== null) {
+      const parent = originalRefineNode.parentNode;
+      if (parent) {
+        const textNode = document.createTextNode(originalRefineText);
+        parent.replaceChild(textNode, originalRefineNode);
+      }
+      originalRefineText = null;
+      originalRefineNode = null;
+      document.getElementById('btnUndo').style.display = 'none';
+      document.getElementById('refineStatus').textContent = '已撤销';
+    }
+    document.getElementById('refinePopover').classList.remove('visible');
+    return;
+  }
+
+  if (!selectedText) return;
+
+  const instruction = document.getElementById('refineInstruction').value;
+  const btn = document.getElementById('btnRefine');
+  const status = document.getElementById('refineStatus');
+
+  btn.disabled = true;
+  status.textContent = '优化中...';
+
+  try {
+    // Capture context (200 chars before and after)
+    let contextBefore = '', contextAfter = '';
+    if (selectedRange) {
+      const node = selectedRange.startContainer;
+      if (node.nodeType === Node.TEXT_NODE) {
+        const fullText = node.textContent || '';
+        const start = selectedRange.startOffset;
+        contextBefore = fullText.slice(Math.max(0, start - 200), start);
+        const end = selectedRange.endOffset;
+        contextAfter = fullText.slice(end, Math.min(fullText.length, end + 200));
+      }
+    }
+
+    const resp = await fetch('/api/v1/report/refine', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        selected_text: selectedText,
+        context_before: contextBefore,
+        context_after: contextAfter,
+        instruction: instruction,
+      }),
+    });
+
+    const data = await resp.json();
+    const refinedText = data.refined_text;
+
+    // Replace selected text in DOM
+    if (selectedRange) {
+      const textNode = selectedRange.startContainer;
+      if (textNode.nodeType === Node.TEXT_NODE) {
+        const start = selectedRange.startOffset;
+        const end = selectedRange.endOffset;
+        const parent = textNode.parentNode;
+        const before = textNode.textContent.slice(0, start);
+        const after = textNode.textContent.slice(end);
+
+        // Build replacement span with undo hint
+        const span = document.createElement('span');
+        span.textContent = refinedText;
+        span.style.background = 'rgba(139,92,246,.2)';
+        span.style.borderRadius = '3px';
+        span.style.padding = '0 2px';
+        span.style.cursor = 'context-menu';
+        span.title = instruction + ' — 右键可撤销';
+        span.dataset.refined = 'true';
+
+        // Save original for undo
+        originalRefineText = selectedText;
+        originalRefineNode = span;
+
+        parent.replaceChild(span, textNode);
+        parent.insertBefore(document.createTextNode(before), span);
+        parent.insertAfter(document.createTextNode(after), span);
+
+        // Show undo button
+        document.getElementById('btnUndo').style.display = 'block';
+        document.getElementById('btnUndo').onclick = () => doRefine(true);
+        document.getElementById('refineStatus').textContent = '已优化 · 可撤销';
+      }
+    }
+
+    // Don't auto-hide popover after refine — let user do more or undo
+    status.innerHTML = '<span style="color:#10b981">已优化</span> · 可撤销';
+  } catch (e) {
+    status.textContent = `失败: ${e.message}`;
+  }
+
+  btn.disabled = false;
+}
+
+// Wire refine button
+document.getElementById('btnRefine').addEventListener('click', () => doRefine(false));
+
+// Polyfill: insertAfter
+if (!Node.prototype.insertAfter) {
+  Node.prototype.insertAfter = function(newNode, refNode) {
+    this.insertBefore(newNode, refNode.nextSibling);
+  };
+}
+
+// =====================================================================
+// Export
+// =====================================================================
+async function exportReport(format) {
+  if (format === 'md') {
+    // Prefer server-generated markdown if available
+    let md = reportMarkdown;
+    if (!md && reportJson) {
+      // Reconstruct client-side
+      let lines = [`# ${reportJson.title || '研报'}\n`];
+      if (reportJson.abstract) lines.push(`> **摘要**: ${reportJson.abstract}\n`);
+      if (reportJson.sections) {
+        reportJson.sections.forEach(sec => {
+          lines.push(`## ${sec.title}\n\n${sec.content}\n`);
+        });
+      }
+      md = lines.join('\n');
+    }
+    if (!md) { alert('尚未生成报告'); return; }
+
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `report_${reportId || Date.now()}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+  } else if (format === 'pdf') {
+    // Try server-side PDF first
+    if (reportId) {
+      try {
+        const resp = await fetch(`/api/v1/report/${reportId}/export?format=pdf`);
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `report_${reportId}.pdf`;
+          a.click();
+          URL.revokeObjectURL(url);
+          return;
+        }
+      } catch (e) {
+        // Fall through to window.print()
+      }
+    }
+    // Fallback: window.print()
+    const viewer = document.getElementById('reportViewer');
+    const html = viewer.innerHTML;
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html><head><meta charset="UTF-8">
+      <title>${reportJson?.title || '研报导出'}</title>
+      <style>
+        body { font-family: 'PingFang SC','Microsoft YaHei',sans-serif;
+               font-size: 14px; line-height: 1.9; max-width: 800px;
+               margin: 0 auto; padding: 40px; color: #222; }
+        h1 { font-size: 24px; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        h2 { font-size: 18px; margin-top: 28px; color: #333; }
+        h3 { font-size: 16px; }
+        blockquote { border-left: 3px solid #666; padding: 8px 16px; color: #555; margin: 14px 0; }
+        table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+        th, td { border: 1px solid #ccc; padding: 6px 10px; }
+        th { background: #f0f0f0; }
+        pre { background: #f5f5f5; padding: 12px; border-radius: 4px; font-size: 12px; }
+        code { background: #f5f5f5; padding: 1px 4px; }
+        @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+      </style></head>
+      <body>${html}</body></html>
+    `);
+    printWindow.document.close();
+    setTimeout(() => printWindow.print(), 600);
+  }
+}
+
+// =====================================================================
+// Copy to clipboard
+// =====================================================================
+async function copyReport() {
+  let text = reportMarkdown;
+  if (!text && reportJson) {
+    let lines = [`# ${reportJson.title || '研报'}\n`];
+    if (reportJson.abstract) lines.push(`> **摘要**: ${reportJson.abstract}\n`);
+    if (reportJson.sections) {
+      reportJson.sections.forEach(sec => {
+        lines.push(`## ${sec.title}\n\n${sec.content}\n`);
+      });
+    }
+    text = lines.join('\n');
+  }
+  if (!text) { alert('尚未生成报告'); return; }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = document.getElementById('btnCopy');
+    const orig = btn.textContent;
+    btn.textContent = '已复制!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  } catch (e) {
+    // Fallback
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    const btn = document.getElementById('btnCopy');
+    btn.textContent = '已复制!';
+    setTimeout(() => { btn.textContent = '📋 复制'; }, 1500);
+  }
+}
+
+// =====================================================================
+// Helpers
+// =====================================================================
+function escapeHtml(str) {
+  if (!str) return '';
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+</script>
+</body>
+</html>
