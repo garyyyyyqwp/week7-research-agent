@@ -581,7 +581,7 @@ async function generateReport(overrideParams) {
     language: document.getElementById('langSelect').value,
     enabledSites: Array.from(document.querySelectorAll('#siteChecks input:checked')).map(cb => cb.value),
   };
-  if (!params.topic) return;
+  if (!params.topic) { alert('请输入研究主题'); return; }
 
   // Save for retry
   currentGenParams = params;
@@ -595,7 +595,7 @@ async function generateReport(overrideParams) {
   reportId = null;
   sectionContents = {};
   totalSections = 0;
-  if (!params) {
+  if (!overrideParams) {
     document.getElementById('reportViewer').innerHTML = '';
     document.getElementById('reportTitle').textContent = '研究报告预览';
     document.getElementById('warningBanner').classList.remove('visible');
@@ -634,7 +634,9 @@ async function generateReport(overrideParams) {
 
     if (!resp.ok) {
       const errText = await resp.text();
-      throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+      addLogLine('❌', `HTTP ${resp.status}: ${errText.slice(0, 200)}`, 'error');
+      resetUI();
+      return;
     }
 
     const reader = resp.body.getReader();

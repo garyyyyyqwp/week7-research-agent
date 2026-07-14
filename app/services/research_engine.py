@@ -280,7 +280,7 @@ class ResearchEngine:
             parallel_elapsed = time.monotonic() - parallel_start
 
             # Increment tool invocation counter
-            tools_called_count += len([t for _, _, _, is_dup in tool_tasks if not is_dup])
+            tools_called_count += len([1 for _, _, _, is_dup in tool_tasks if not is_dup])
 
             # --- Yield progress for each action ---
             for (tc, fn_name, fn_args, is_dup), observation in zip(tool_tasks, results):
