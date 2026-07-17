@@ -96,13 +96,7 @@ async def _search_via_jina(query: str, num_results: int = 5) -> list[dict[str, A
 
     except Exception as e:
         logger.error("Jina search also failed: %s", e)
-        return [{
-            "title": "搜索失败",
-            "url": "",
-            "snippet": f"搜索服务暂时不可用: {str(e)}",
-            "published_date": "",
-            "score": None,
-        }]
+        return []  # Return empty list — never register error placeholder as a citation
 
 
 # ---------------------------------------------------------------------------

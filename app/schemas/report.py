@@ -72,13 +72,32 @@ class ResearchReport(BaseModel):
         # --- Metadata header (Week 7: §7.3) ---
         if self.meta:
             lines.append("---")
-            lines.append(f"topic: \"{self.meta.topic}\"")
-            lines.append(f"generated_at: {self.meta.generated_at}")
-            lines.append(f"num_sources: {self.meta.num_sources}")
-            sites_str = ", ".join(self.meta.sites)
-            lines.append(f"sites: [{sites_str}]")
-            lines.append(f"language: {self.meta.language}")
-            lines.append(f"model: {self.meta.model}")
+            # Use yaml.safe_dump for safe serialization, fall back to
+            # escaped inline strings if yaml is not available.
+            try:
+                import yaml
+                meta_dict = {
+                    "topic": self.meta.topic,
+                    "generated_at": self.meta.generated_at,
+                    "num_sources": self.meta.num_sources,
+                    "sites": self.meta.sites,
+                    "language": self.meta.language,
+                    "model": self.meta.model,
+                }
+                lines.append(yaml.safe_dump(meta_dict, allow_unicode=True).rstrip())
+            except ImportError:
+                # Fallback: manually escape double-quotes for YAML safety
+                def _esc(s: str) -> str:
+                    return s.replace('"', '\\"')
+                lines.append(f"topic: \"{_esc(self.meta.topic)}\"")
+                lines.append(f"generated_at: {_esc(self.meta.generated_at)}")
+                lines.append(f"num_sources: {self.meta.num_sources}")
+                sites_str = ", ".join(
+                    s.replace('"', '\\"') for s in self.meta.sites
+                )
+                lines.append(f"sites: [{sites_str}]")
+                lines.append(f"language: {_esc(self.meta.language)}")
+                lines.append(f"model: {_esc(self.meta.model)}")
             lines.append("---")
             lines.append("")
 

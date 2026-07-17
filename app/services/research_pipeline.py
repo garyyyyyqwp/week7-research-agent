@@ -89,20 +89,30 @@ async def run_research_pipeline(
         engine = ResearchEngine(cm, rc, max_steps=AGENT_MAX_STEPS)
         async for ev in engine.research(topic, enabled_sites):
             yield ev
-            # Collect site names from progress events for metadata
-            data = _parse_event_data(ev)
-            # This is handled later via CM sources
 
         # Collect site names from registered citations
         for c in cm.sources:
             if c.site_name:
                 used_sites.add(c.site_name)
 
-        research_elapsed = time.monotonic() - pipeline_start
+        # research_done — single authoritative event (engine stores stats)
+        stats = getattr(engine, '_final_stats', None) or {}
+        research_elapsed = stats.get("elapsed_s", round(time.monotonic() - pipeline_start, 1))
+        chunks_stored = stats.get("chunks_stored", 0)
+        hit_max_steps = stats.get("hit_max_steps", False)
         yield _sse("research_done", {
             "sources": cm.count,
-            "elapsed_s": round(research_elapsed, 1),
+            "elapsed_s": research_elapsed,
+            "chunks_stored": chunks_stored,
+            "hit_max_steps": hit_max_steps,
         })
+
+        if hit_max_steps:
+            yield _sse("research_progress", {
+                "ts": None,
+                "icon": "⚠️",
+                "message": f"研究已达最大步数 ({AGENT_MAX_STEPS})，进入大纲生成阶段",
+            })
 
         logger.info(
             "Phase 1 complete: %d sources, %d sites, %.1fs",

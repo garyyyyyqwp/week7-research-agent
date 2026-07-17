@@ -178,9 +178,15 @@ async def export_report(
         md_content = report_data.get("markdown", "")
         if not md_content:
             # Generate markdown from report JSON
-            from app.schemas.report import ResearchReport
-            report = ResearchReport(**report_data["report"])
-            md_content = report.to_markdown()
+            try:
+                from app.schemas.report import ResearchReport
+                report = ResearchReport(**report_data["report"])
+                md_content = report.to_markdown()
+            except Exception:
+                raise HTTPException(
+                    status_code=500,
+                    detail="无法生成 Markdown 内容，报告数据可能已损坏。"
+                )
 
         return Response(
             content=md_content,
@@ -191,7 +197,16 @@ async def export_report(
         )
 
     elif format == "pdf":
-        # Use weasyprint for PDF generation
+        # Use weasyprint for PDF generation; gracefully degrade on missing deps
+        try:
+            import weasyprint
+        except ImportError:
+            raise HTTPException(
+                status_code=501,
+                detail="PDF导出需要安装 weasyprint 及其系统依赖（cairo/pango）。"
+                       "请使用 Markdown 格式导出，或在浏览器中按 Ctrl+P 打印。"
+            )
+
         try:
             md_content = report_data.get("markdown", "")
             html = _md_to_html(md_content, report_data.get("report", {}).get("title", "Report"))

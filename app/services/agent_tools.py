@@ -261,9 +261,6 @@ async def execute_search_site(
     if not result.get("results"):
         return f"[{result['site_name']}] 未找到与 '{query}' 相关的结果。"
 
-    if not result.get("results"):
-        return f"[{result['site_name']}] 未找到与 '{query}' 相关的结果。"
-
     parts = [
         f"[search_site 结果] 站点: {result['site_name']} ({result['category']})\n"
         f"查询: {query}\n"
@@ -282,7 +279,7 @@ async def execute_search_site(
     return "\n".join(parts)
 
 
-async def execute_calculator(expression: str) -> str:
+async def execute_calculator(expression: str, citation_manager=None) -> str:
     """Safe math expression evaluator."""
     import ast
     import operator as op
@@ -313,7 +310,7 @@ async def execute_calculator(expression: str) -> str:
         return f"计算错误: {str(e)}"
 
 
-async def execute_get_current_time() -> str:
+async def execute_get_current_time(citation_manager=None) -> str:
     """Get current date and time."""
     now = datetime.now(timezone.utc)
     return (
@@ -338,16 +335,17 @@ _TOOLS: dict[str, Any] = {
 
 
 async def execute_tool(tool_name: str, tool_args: dict[str, Any], citation_manager=None) -> str:
-    """Execute a tool by name. Passes citation_manager for source tracking."""
+    """Execute a tool by name. Passes citation_manager for source tracking.
+
+    All tool executors accept an optional citation_manager parameter, so we
+    always pass it — no fragile TypeError-based dispatch needed.
+    """
     executor = _TOOLS.get(tool_name)
     if executor is None:
         return f"错误：未知工具 '{tool_name}'。可用工具: {', '.join(_TOOLS)}"
 
     try:
         return str(await executor(**tool_args, citation_manager=citation_manager))
-    except TypeError:
-        # Some tools (calculator, get_current_time) don't accept citation_manager
-        return str(await executor(**tool_args))
     except Exception as e:
         logger.error("Tool error (%s): %s", tool_name, e)
         return f"工具执行错误 ({tool_name}): {e}"

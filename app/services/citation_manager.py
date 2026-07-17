@@ -13,6 +13,9 @@ Usage in agent loop:
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -68,17 +71,22 @@ class CitationManager:
         """Register a source and return its citation number.
 
         If the same URL is already registered, returns the existing number.
+        Empty URLs are rejected to prevent data-quality issues.
 
         Args:
-            url: Source URL.
+            url: Source URL (must be non-empty).
             title: Title of the article/page.
             snippet: Short summary or abstract.
             source_type: Category ("web", "academic", "official", "code").
             site_name: Source site name (e.g., "PubMed", "arXiv").
 
         Returns:
-            Citation number (1-indexed).
+            Citation number (1-indexed), or 0 if URL is empty.
         """
+        if not url or not url.strip():
+            logger.warning("CitationManager.add: empty URL rejected (title=%s)", title[:60])
+            return 0
+
         if url in self._sources:
             return self._sources[url].index
 

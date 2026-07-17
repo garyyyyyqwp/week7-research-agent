@@ -15,3 +15,6 @@ chromadb>=0.5.0
 tiktoken>=0.7.0
 tenacity>=8.2.0
 
+# --- Dev / Test ---
+pytest>=8.0.0
+pytest-asyncio>=0.24.0

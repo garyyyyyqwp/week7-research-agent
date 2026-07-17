@@ -624,11 +624,50 @@ def _default_outline(topic: str, num_sections: int) -> list[dict]:
 
 
 def _parse_json_response(content: str) -> Any:
-    """Extract and parse JSON from LLM response, handling markdown code fences."""
-    json_match = re.search(r'\[.*\]', content, re.DOTALL)
-    if json_match:
-        content = json_match.group(0)
-    return json.loads(content)
+    """Extract and parse JSON from LLM response, handling markdown code fences.
+
+    Uses bracket-depth tracking to correctly extract JSON arrays from responses
+    that may have trailing text with bracket characters.
+    """
+    # Remove markdown code fences first
+    cleaned = re.sub(r'```(?:json)?\s*', '', content)
+    cleaned = re.sub(r'```\s*', '', cleaned)
+
+    # Find the first '[' and track depth to find matching ']'
+    start = cleaned.find('[')
+    if start == -1:
+        raise json.JSONDecodeError("No JSON array found", content, 0)
+
+    depth = 0
+    in_string = False
+    escape_next = False
+    end = -1
+    for i in range(start, len(cleaned)):
+        ch = cleaned[i]
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\':
+            escape_next = True
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '[':
+            depth += 1
+        elif ch == ']':
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+
+    if end == -1:
+        raise json.JSONDecodeError("Unmatched bracket in JSON", cleaned, start)
+
+    extracted = cleaned[start:end + 1]
+    return json.loads(extracted)
 
 
 def _sse_old(event: str, data: dict) -> dict:

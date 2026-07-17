@@ -672,6 +672,15 @@ async function generateReport(overrideParams) {
     } else {
       addLogLine('❌', `连接错误: ${e.message}`, 'error');
       addLogLine('🔄', '点击「生成研报」重试，或检查网络连接', 'warn');
+      // Show retry button inline if we have saved params
+      if (currentGenParams) {
+        const log = document.getElementById('progressLog');
+        const retryDiv = document.createElement('div');
+        retryDiv.className = 'line';
+        retryDiv.innerHTML = `<span class="icon">🔄</span><a href="#" onclick="retryGenerate();return false" style="color:var(--accent);text-decoration:underline">点击此处重新连接</a>`;
+        log.appendChild(retryDiv);
+        log.scrollTop = log.scrollHeight;
+      }
     }
   }
 
@@ -787,6 +796,16 @@ function handleSSEEvent(event, data) {
 
     case 'section_chunk':
       // {index, chunk}
+      // Guard: if section_start hasn't arrived yet, buffer the chunk
+      {
+        const contentDiv = document.getElementById(`section-content-${data.index}`);
+        if (!contentDiv) {
+          // Section DOM not ready yet — buffer the chunk in sectionContents
+          if (!sectionContents[data.index]) sectionContents[data.index] = '';
+          sectionContents[data.index] += data.chunk;
+          break;
+        }
+      }
       if (!sectionContents[data.index]) sectionContents[data.index] = '';
       sectionContents[data.index] += data.chunk;
 
@@ -981,8 +1000,18 @@ async function doRefine(undoMode) {
     if (originalRefineNode && originalRefineText !== null) {
       const parent = originalRefineNode.parentNode;
       if (parent) {
-        const textNode = document.createTextNode(originalRefineText);
-        parent.replaceChild(textNode, originalRefineNode);
+        // Multi-node selection undo: restore from stored fragment
+        if (originalRefineNode._undoFragment) {
+          const frag = originalRefineNode._undoFragment;
+          const range = document.createRange();
+          range.selectNode(originalRefineNode);
+          range.deleteContents();
+          range.insertNode(frag);
+        } else {
+          // Simple single-node undo
+          const textNode = document.createTextNode(originalRefineText);
+          parent.replaceChild(textNode, originalRefineNode);
+        }
       }
       originalRefineText = null;
       originalRefineNode = null;
@@ -1030,15 +1059,22 @@ async function doRefine(undoMode) {
     const data = await resp.json();
     const refinedText = data.refined_text;
 
-    // Replace selected text in DOM
+    // Replace selected text in DOM — handle both single-node and multi-node selections
     if (selectedRange) {
-      const textNode = selectedRange.startContainer;
-      if (textNode.nodeType === Node.TEXT_NODE) {
+      const commonAncestor = selectedRange.commonAncestorContainer;
+      const startContainer = selectedRange.startContainer;
+      const endContainer = selectedRange.endContainer;
+
+      // Strategy: use Range.deleteContents() + insertNode for robustness
+      // This handles cross-node selections correctly where simple text-node
+      // replacement would fail silently.
+      if (startContainer === endContainer && startContainer.nodeType === Node.TEXT_NODE) {
+        // Simple case: selection within a single text node
         const start = selectedRange.startOffset;
         const end = selectedRange.endOffset;
-        const parent = textNode.parentNode;
-        const before = textNode.textContent.slice(0, start);
-        const after = textNode.textContent.slice(end);
+        const parent = startContainer.parentNode;
+        const before = startContainer.textContent.slice(0, start);
+        const after = startContainer.textContent.slice(end);
 
         // Build replacement span with undo hint
         const span = document.createElement('span');
@@ -1054,15 +1090,35 @@ async function doRefine(undoMode) {
         originalRefineText = selectedText;
         originalRefineNode = span;
 
-        parent.replaceChild(span, textNode);
+        parent.replaceChild(span, startContainer);
         parent.insertBefore(document.createTextNode(before), span);
         parent.insertAfter(document.createTextNode(after), span);
+      } else {
+        // Complex case: multi-node selection — replace via deleteContents + insertNode
+        const span = document.createElement('span');
+        span.textContent = refinedText;
+        span.style.background = 'rgba(139,92,246,.2)';
+        span.style.borderRadius = '3px';
+        span.style.padding = '0 2px';
+        span.style.cursor = 'context-menu';
+        span.title = instruction + ' — 右键可撤销';
+        span.dataset.refined = 'true';
 
-        // Show undo button
-        document.getElementById('btnUndo').style.display = 'block';
-        document.getElementById('btnUndo').onclick = () => doRefine(true);
-        document.getElementById('refineStatus').textContent = '已优化 · 可撤销';
+        // Save original range for undo
+        originalRefineText = selectedText;
+        originalRefineNode = span;
+        // Save the original fragment for undo restoration
+        const originalFragment = selectedRange.cloneContents();
+        span._undoFragment = originalFragment;
+
+        selectedRange.deleteContents();
+        selectedRange.insertNode(span);
       }
+
+      // Show undo button
+      document.getElementById('btnUndo').style.display = 'block';
+      document.getElementById('btnUndo').onclick = () => doRefine(true);
+      document.getElementById('refineStatus').textContent = '已优化 · 可撤销';
     }
 
     // Don't auto-hide popover after refine — let user do more or undo

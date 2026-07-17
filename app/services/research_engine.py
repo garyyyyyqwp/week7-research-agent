@@ -336,17 +336,16 @@ class ResearchEngine:
                 "message": f"研究已达最大步数 ({self.max_steps})，进入大纲生成阶段",
             })
 
-        # --- Yield research_done ---
+        # --- Store final stats for the pipeline to pick up ---
         elapsed = time.monotonic() - research_start
-        yield {
-            "event": "research_done",
-            "data": json.dumps({
-                "sources": self.cm.count,
-                "elapsed_s": round(elapsed, 1),
-                "chunks_stored": self._total_chunks_stored,
-                "hit_max_steps": hit_max_steps,
-            }, ensure_ascii=False),
+        self._final_stats = {
+            "sources": self.cm.count,
+            "elapsed_s": round(elapsed, 1),
+            "chunks_stored": self._total_chunks_stored,
+            "hit_max_steps": hit_max_steps,
         }
+        # research_done is emitted by the pipeline, not here —
+        # avoids duplicate events with different data shapes.
 
     # ------------------------------------------------------------------
     # Full-text capture for ResearchContext

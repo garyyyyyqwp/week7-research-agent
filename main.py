@@ -81,17 +81,22 @@ async def health_deep():
     # Check configs loaded
     checks["config"] = bool(OPENAI_API_KEY)
 
-    # Quick connectivity check (no actual API call — just DNS resolution)
+    # Quick connectivity check to the configured LLM base URL
     import socket
+    from urllib.parse import urlparse
+    from app.utils.config import OPENAI_BASE_URL
+
+    llm_host = urlparse(OPENAI_BASE_URL).hostname or "open.bigmodel.cn"
     try:
         t0 = _time.monotonic()
-        socket.getaddrinfo("open.bigmodel.cn", 443, proto=socket.IPPROTO_TCP)
+        socket.getaddrinfo(llm_host, 443, proto=socket.IPPROTO_TCP)
         checks["llm_connectivity"] = {
             "status": "ok",
+            "host": llm_host,
             "latency_ms": round((_time.monotonic() - t0) * 1000),
         }
     except Exception as e:
-        checks["llm_connectivity"] = {"status": "error", "detail": str(e)}
+        checks["llm_connectivity"] = {"status": "error", "host": llm_host, "detail": str(e)}
 
     healthy = all(
         v if isinstance(v, bool) else v.get("status") != "error"
