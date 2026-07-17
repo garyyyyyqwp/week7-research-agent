@@ -10,6 +10,10 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 120
     healthCheckPath: /health
     envVars:
+      # Render native runtime 不读 runtime.txt（那是 Heroku 约定），
+      # 指定 Python 版本必须用 PYTHON_VERSION 环境变量
+      - key: PYTHON_VERSION
+        value: "3.11.11"
       # ---- LLM (Qwen3-235B-A22B-Instruct) ----
       - key: OPENAI_API_KEY
         sync: false

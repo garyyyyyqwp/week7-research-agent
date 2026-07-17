@@ -51,7 +51,13 @@ async def main():
     research_progress_count = 0
     section_chunk_count = 0
     total_sources = 0
+    research_elapsed = 0.0      # ★ 搜索耗时（研究阶段）
+    chunks_stored = 0           # ★ 入库 chunk 总数
+    hit_max_steps = False
+    used_sites: list[str] = []
     sections_data: list[dict] = []
+    section_start_ts: dict[int, float] = {}
+    warnings: list[str] = []
     errors: list[str] = []
 
     async for event in run_research_pipeline(
@@ -77,10 +83,14 @@ async def main():
 
         elif ev_type == "research_done":
             total_sources = data.get("sources", 0)
-            elapsed = data.get("elapsed_s", 0)
-            print(f"\n📊 研究阶段完成: {total_sources} 个来源, {elapsed:.1f}s")
+            research_elapsed = data.get("elapsed_s", 0)
+            chunks_stored = data.get("chunks_stored", 0)
+            hit_max_steps = data.get("hit_max_steps", False)
+            print(f"\n📊 研究阶段完成: {total_sources} 个来源, "
+                  f"{chunks_stored} 个入库块, {research_elapsed:.1f}s")
 
         elif ev_type == "warning":
+            warnings.append(data.get("message", data.get("code", "")))
             print(f"\n⚠️  警告: {data.get('message', data.get('code', ''))}")
 
         elif ev_type == "outline":
@@ -95,23 +105,29 @@ async def main():
             idx = data.get("index", 0) + 1
             total = data.get("total", 0)
             title = data.get("title", "")
+            section_start_ts[data.get("index", 0)] = time.monotonic()
             print(f"\n✍️  撰写第 {idx}/{total} 节: {title}")
 
         elif ev_type == "section_chunk":
             section_chunk_count += 1
 
         elif ev_type == "section_end":
-            idx = data.get("index", 0) + 1
+            raw_idx = data.get("index", 0)
+            idx = raw_idx + 1
             title = data.get("title", "")
             citations = data.get("citations", [])
             content_len = len(data.get("content", ""))
+            sec_elapsed = time.monotonic() - section_start_ts.get(raw_idx, start)
             sections_data.append({
                 "index": idx,
                 "title": title,
                 "content_length": content_len,
                 "citations": citations,
+                "retrieved_chunks": data.get("retrieved_chunks", 0),
+                "elapsed_s": round(sec_elapsed, 1),
             })
-            print(f"    ✅ 完成 (长度: {content_len} 字, 引用: {citations})")
+            print(f"    ✅ 完成 ({sec_elapsed:.1f}s, 长度: {content_len} 字, "
+                  f"检索块: {data.get('retrieved_chunks', 0)}, 引用: {citations})")
 
         elif ev_type == "abstract":
             abstract_len = len(data.get("abstract", ""))
@@ -161,26 +177,31 @@ async def main():
 | 指标 | 值 |
 |---|---|
 | 总耗时 | {total_elapsed:.1f}s |
+| 搜索耗时 (Phase 1 研究阶段) | {research_elapsed:.1f}s |
+| 写作+后处理耗时 (Phase 2-4) | {total_elapsed - research_elapsed:.1f}s |
 | 研究阶段事件数 | {research_progress_count} |
 | Section chunk 事件数 | {section_chunk_count} |
+| 达到最大步数保护 | {'是' if hit_max_steps else '否'} |
 
 ## 来源统计
 | 指标 | 值 |
 |---|---|
 | 收集来源数 | {total_sources} |
-| 警告 | {'few_sources' if total_sources < 3 else '无'} |
+| 入库 chunk 总数 | {chunks_stored} |
+| 警告 | {('; '.join(warnings)) if warnings else '无'} |
 
 ## 章节详情
-| # | 标题 | 长度 (字) | Token 估算 | 引用 |
-|---|---|---|---|---|
+| # | 标题 | 耗时 (s) | 长度 (字) | 检索块数 | Token 估算 | 引用 |
+|---|---|---|---|---|---|---|
 """
 
     for s in sections_data:
         tokens_est = s["content_length"] // 4
         cites_str = ", ".join(f"[{c}]" for c in s.get("citations", []))
         log_content += (
-            f"| {s['index']} | {s['title']} | "
-            f"{s['content_length']} | ~{tokens_est} | {cites_str} |\n"
+            f"| {s['index']} | {s['title']} | {s.get('elapsed_s', '?')} | "
+            f"{s['content_length']} | {s.get('retrieved_chunks', 0)} | "
+            f"~{tokens_est} | {cites_str} |\n"
         )
 
     log_content += f"""

@@ -161,11 +161,30 @@ class TestExtractCitationIndices:
         assert indices == [1]
 
     def test_large_range(self):
+        """宽度 >20 的区间被拒绝 —— [1-50] 更可能是数据artifact而非真引用。
+
+        （审计修复：量表单元格 [0-100]、宽区间不再污染 citations 列表）
+        """
         text = "References [1-50] cover this topic."
         indices = extract_citation_indices(text)
-        assert len(indices) == 50
-        assert indices[0] == 1
-        assert indices[-1] == 50
+        assert indices == []
+
+    def test_moderate_range_accepted(self):
+        text = "See [1-8] for details."
+        indices = extract_citation_indices(text)
+        assert indices == [1, 2, 3, 4, 5, 6, 7, 8]
+
+    def test_max_index_filters_year_spans(self):
+        """max_index=来源数时，年份区间 [2021-2025] 与幻觉编号被过滤。"""
+        text = "「十四五」期间[2021-2025]取得进展[2]，另见[12]。"
+        indices = extract_citation_indices(text, max_index=6)
+        assert indices == [2]
+
+    def test_zero_and_negative_rejected(self):
+        text = "范围[0-3]与[1]。"
+        indices = extract_citation_indices(text, max_index=10)
+        assert indices == [1, 2, 3]
+        assert 0 not in indices
 
 
 # ---------------------------------------------------------------------------
