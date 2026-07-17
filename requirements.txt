@@ -9,7 +9,7 @@ httpx>=0.27.0
 tavily-python>=0.5.0
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
-weasyprint>=62.0
+weasyprint>=63.0  # >=63 用 HarfBuzz 子集化大体积 CJK 字体, 否则导出极慢
 markdown>=3.6.0
 chromadb>=0.5.0
 tiktoken>=0.7.0

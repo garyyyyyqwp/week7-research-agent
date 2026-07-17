@@ -239,72 +239,91 @@ async def export_report(
         )
 
 
-def _detect_cjk_font_url() -> str | None:
-    """Return a file:// URL of an available CJK font on the system, or None.
+def _detect_cjk_fonts() -> dict[str, str]:
+    """Return {'regular': file_uri, 'bold': file_uri} of available CJK fonts.
 
     WeasyPrint (Pango/fontconfig) does NOT reliably pick up Windows/Linux CJK
     fonts by family name only — it walks fontconfig's registered set, and on
-    a default Linux container (e.g. Render) that set has no CJK entries. So
-    we explicitly point Pango at a font file that physically exists on disk.
+    a default Linux container (e.g. Render's native Python runtime) that set
+    has NO CJK entries at all. apt-get is also unavailable there (non-root),
+    so the only deployment-proof source is a font file bundled in the repo.
+    We point Pango at that file directly via @font-face + file:// URL.
 
     Search order:
-      1. Project-bundled fonts under <repo>/static/fonts/
+      1. Project-bundled fonts under <repo>/static/fonts/  ← works everywhere
       2. Common system locations (Windows / macOS / Linux)
       3. Last-resort scan: any .ttc/.otf in well-known font dirs
+
+    Missing keys mean "not found"; an empty dict means no CJK font at all
+    (CJK text would render as tofu boxes).
     """
     import glob
     import os
     import platform
     from pathlib import Path
 
-    # 1) 项目内置字体(最可靠,任何环境都生效)
+    fonts: dict[str, str] = {}
+
+    # 1) 项目内置字体(最可靠,任何环境都生效) — 按文件名区分字重
     project_fonts = Path(__file__).resolve().parent.parent.parent / "static" / "fonts"
     if project_fonts.is_dir():
-        for ext in ("ttc", "otf", "ttf"):
-            for p in sorted(project_fonts.glob(f"*.{ext}")):
-                normalized = str(p).replace("\\", "/")
-                if normalized.startswith("/"):
-                    return f"file://{normalized}"
-                return f"file:///{normalized}"
+        all_fonts = sorted(
+            p for ext in ("ttf", "otf", "ttc")
+            for p in project_fonts.glob(f"*.{ext}")
+        )
+        for p in all_fonts:
+            stem = p.stem.lower()
+            if "bold" in stem:
+                fonts.setdefault("bold", p.as_uri())
+            else:
+                fonts.setdefault("regular", p.as_uri())
+        if "regular" not in fonts and all_fonts:
+            fonts["regular"] = all_fonts[0].as_uri()
+        if fonts:
+            return fonts
 
     system = platform.system()
-    candidates: list[str] = []
+    pairs: list[tuple[Path, Path | None]] = []  # (regular, bold-or-None)
 
     if system == "Windows":
-        fonts_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Fonts")
-        for name in (
-            "msyh.ttc", "msyhbd.ttc", "simhei.ttf",
-            "simsun.ttc", "simfang.ttf", "simkai.ttf",
-        ):
-            candidates.append(os.path.join(fonts_dir, name))
+        fdir = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Fonts"
+        pairs = [
+            (fdir / "msyh.ttc", fdir / "msyhbd.ttc"),
+            (fdir / "simhei.ttf", None),
+            (fdir / "simsun.ttc", None),
+            (fdir / "simfang.ttf", None),
+            (fdir / "simkai.ttf", None),
+        ]
     elif system == "Darwin":
-        candidates = [
-            "/System/Library/Fonts/PingFang.ttc",
-            "/System/Library/Fonts/STHeiti Light.ttc",
-            "/System/Library/Fonts/STHeiti Medium.ttc",
-            "/Library/Fonts/Arial Unicode.ttf",
+        pairs = [
+            (Path("/System/Library/Fonts/PingFang.ttc"), None),
+            (Path("/System/Library/Fonts/STHeiti Light.ttc"),
+             Path("/System/Library/Fonts/STHeiti Medium.ttc")),
+            (Path("/Library/Fonts/Arial Unicode.ttf"), None),
         ]
     else:  # Linux / containers / Render
-        candidates = [
+        pairs = [
             # fonts-noto-cjk 包的常见路径(不同 Ubuntu 版本略有差异)
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
-            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+            (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+             Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc")),
+            (Path("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf"),
+             Path("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Bold.otf")),
+            (Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"), None),
+            (Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"), None),
             # 文泉驿
-            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            (Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"), None),
+            (Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"), None),
             # 其他可能位置
-            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            (Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"), None),
+            (Path("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc"), None),
         ]
 
-    for path in candidates:
-        if os.path.exists(path):
-            normalized = path.replace("\\", "/")
-            if normalized.startswith("/"):
-                return f"file://{normalized}"
-            return f"file:///{normalized}"
+    for reg, bold in pairs:
+        if reg.exists():
+            fonts["regular"] = reg.as_uri()
+            if bold is not None and bold.exists():
+                fonts["bold"] = bold.as_uri()
+            return fonts
 
     # 3) 最后兜底:在常见字体目录里 glob 所有 CJK 相关文件
     fallback_dirs = [
@@ -324,11 +343,9 @@ def _detect_cjk_font_url() -> str | None:
             for ext in ("ttc", "otf", "ttf"):
                 matches = sorted(glob.glob(os.path.join(d, f"*.{ext}")))
                 if matches:
-                    normalized = matches[0].replace("\\", "/")
-                    if normalized.startswith("/"):
-                        return f"file://{normalized}"
-                    return f"file:///{normalized}"
-    return None
+                    fonts["regular"] = Path(matches[0]).as_uri()
+                    return fonts
+    return fonts
 
 
 def _md_to_html(md_content: str, title: str = "Research Report") -> str:
@@ -355,21 +372,34 @@ def _md_to_html(md_content: str, title: str = "Research Report") -> str:
     html_body = _re.sub(r'(<table)', r'<div style="page-break-inside: avoid">\1', html_body)
     html_body = _re.sub(r'(</table>)', r'\1</div>', html_body)
 
-    # 显式注册一个 CJK 字体文件,只有当 Pango 真的能读到时才有意义
-    cjk_url = _detect_cjk_font_url()
-    font_face_css = ""
-    if cjk_url:
+    # 显式注册 CJK 字体文件(Regular + Bold),只有当 Pango 真的能读到时才有意义
+    fonts = _detect_cjk_fonts()
+    if fonts:
+        logger.info("PDF export: CJK fonts detected: %s", fonts)
+    else:
+        logger.warning(
+            "PDF export: NO CJK font found — Chinese text will render as boxes. "
+            "Bundle one under static/fonts/ (e.g. NotoSansSC-Regular.otf)."
+        )
+
+    def _font_face(url: str, weight: str) -> str:
         # .ttc 是 truetype collection,用 truetype format;扩展名推断
-        ext = cjk_url.rsplit(".", 1)[-1].lower()
+        ext = url.rsplit(".", 1)[-1].lower()
         fmt = "truetype" if ext in ("ttf", "ttc") else "opentype"
-        font_face_css = f"""
+        return f"""
 @font-face {{
   font-family: 'ProjectCJK';
-  src: url('{cjk_url}') format('{fmt}');
-  font-weight: normal;
+  src: url('{url}') format('{fmt}');
+  font-weight: {weight};
   font-style: normal;
 }}
 """
+
+    font_face_css = ""
+    if "regular" in fonts:
+        font_face_css += _font_face(fonts["regular"], "normal")
+    if "bold" in fonts:
+        font_face_css += _font_face(fonts["bold"], "bold")
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -424,8 +454,10 @@ def _md_to_html(md_content: str, title: str = "Research Report") -> str:
   }}
   th {{ background-color: #f0f0f0; }}
   code {{
+    /* 代码里的中文注释也需要 CJK 兜底,否则同样豆腐块 */
     font-family: "JetBrains Mono", "Fira Code", "Cascadia Code",
-                 "Noto Sans Mono", monospace;
+                 "Noto Sans Mono", "ProjectCJK", "Microsoft YaHei",
+                 "Noto Sans CJK SC", monospace;
     background: #f5f5f5;
     padding: 1px 4px;
     font-size: 10pt;
