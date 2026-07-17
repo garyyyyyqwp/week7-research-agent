@@ -14,8 +14,25 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+_TAG_RE = re.compile(r"<[^>]*>")
+
+
+def _clean_text(s: str, limit: int = 300) -> str:
+    """Strip HTML tags / control chars from scraped text fields.
+
+    抓取网页的 <title>/摘要可能携带 HTML（甚至 <img onerror=...> 注入）。
+    这些字段会流入前端 marked+innerHTML 渲染与 MD/PDF 导出 —— 在注册
+    入口统一清洗，所有下游一次受益。
+    """
+    if not s:
+        return ""
+    s = _TAG_RE.sub("", s)
+    s = s.replace("\x00", "").replace("\r", " ")
+    return s.strip()[:limit]
 
 
 @dataclass
@@ -94,10 +111,10 @@ class CitationManager:
         self._sources[url] = Citation(
             index=self._counter,
             url=url,
-            title=title,
-            snippet=snippet,
+            title=_clean_text(title, 300) or url,
+            snippet=_clean_text(snippet, 500),
             source_type=source_type,
-            site_name=site_name,
+            site_name=_clean_text(site_name, 100),
             fetched_at=datetime.now(timezone.utc).isoformat(),
         )
         return self._counter
@@ -167,16 +184,18 @@ class CitationManager:
         )
 
         if style == "markdown":
-            lines = ["## 📚 参考文献\n"]
+            lines = ["## 📚 参考文献"]
             for c in sorted_citations:
                 source_badge = f" `[{c.source_type}]`" if c.source_type else ""
                 site_prefix = f"*{c.site_name}* — " if c.site_name else ""
+                # 条目间空行分隔（否则 markdown 渲染成一整段）；URL 用行尾双空格
+                # 硬换行，不能用 4 空格缩进（那是 markdown 代码块语法）
                 lines.append(
                     f"[{c.index}] {site_prefix}"
-                    f"**{c.title}**{source_badge}\n"
-                    f"    {c.url}"
+                    f"**{c.title}**{source_badge}  \n"
+                    f"{c.url}"
                 )
-            return "\n".join(lines)
+            return "\n\n".join(lines)
 
         elif style == "plain":
             lines = ["参考文献:"]

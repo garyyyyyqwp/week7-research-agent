@@ -3,16 +3,17 @@
 import json
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from sse_starlette.sse import EventSourceResponse
 
 from app.schemas.agent import AgentChatRequest
 from app.services.agent import run_agent_stream
+from app.utils.ratelimit import rate_limit
 
 router = APIRouter(tags=["agent"])
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(rate_limit(10, 60))])
 async def agent_chat(request: AgentChatRequest):
     """Agent chat with SSE streaming.
 

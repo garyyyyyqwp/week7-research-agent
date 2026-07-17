@@ -108,11 +108,8 @@ async def run_research_pipeline(
         })
 
         if hit_max_steps:
-            yield _sse("research_progress", {
-                "ts": None,
-                "icon": "⚠️",
-                "message": f"研究已达最大步数 ({AGENT_MAX_STEPS})，进入大纲生成阶段",
-            })
+            # engine 内部已经 yield 了一次 —— 不再重复发送"
+            pass
 
         logger.info(
             "Phase 1 complete: %d sources, %d sites, %.1fs",
@@ -159,6 +156,7 @@ async def run_research_pipeline(
 
         prior_summaries: list[dict] = []
         all_sections_content: list[dict] = []
+        degraded_retrieval_warned = False
 
         for i, sec in enumerate(outline):
             section_title = sec.get("title", f"Section {i+1}")
@@ -172,6 +170,15 @@ async def run_research_pipeline(
             # --- ★ CORE FIX: retrieve only top_k relevant chunks ★ ---
             # This replaces Week 6's references_text="" with real data
             chunks = await rc.retrieve(section_title, top_k=RETRIEVE_TOP_K)
+
+            # 已入库却检索不到 → 检索链路故障（如嵌入 API 中途失效），
+            # 必须让用户知道本节不是基于检索材料写的
+            if not chunks and chunks_stored > 0 and not degraded_retrieval_warned:
+                degraded_retrieval_warned = True
+                yield _sse("warning", {
+                    "code": "degraded_retrieval",
+                    "message": "检索服务异常，部分章节可能未基于已收集的资料撰写",
+                })
 
             # Estimate token usage for logging
             chunk_tokens_est = sum(len(c.get("content", "")) // 4 for c in chunks)
@@ -204,13 +211,16 @@ async def run_research_pipeline(
                 collected += f"\n*(本节生成时遇到错误: {e})*\n"
 
             # Extract citation indices from generated text
-            used_citations = extract_citation_indices(collected)
+            # (bounded by cm.count — 年份区间 [2021-2025]、幻觉编号不再混入)
+            used_citations = extract_citation_indices(collected, max_index=cm.count)
 
             yield _sse("section_end", {
                 "index": i,
                 "title": section_title,
                 "content": collected,
                 "citations": used_citations,
+                # 运行日志需要：本节实际检索到的材料块数（前端忽略未知字段）
+                "retrieved_chunks": len(chunks),
             })
 
             all_sections_content.append({

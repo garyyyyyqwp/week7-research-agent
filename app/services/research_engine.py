@@ -130,6 +130,7 @@ class ResearchEngine:
         step_num = 0
         hit_max_steps = False
         tools_called_count = 0  # Track total tool invocations across all steps
+        tool_rounds = 0         # Rounds (loop iterations) that executed >=1 real tool
         research_start = time.monotonic()
 
         while step_num < self.max_steps:
@@ -184,16 +185,18 @@ class ResearchEngine:
                     collected_content += delta.content
 
             # --- Check if done (no tool calls = Phase 1 complete) ---
-            # Require at least 2 rounds of tool calls before stopping,
-            # to prevent lazy LLM from quitting after one search.
+            # Require at least 2 ROUNDS of tool execution before stopping,
+            # to prevent lazy LLM from quitting after one search round.
+            # (Counting invocations would let 1 round of 3 parallel searches
+            # satisfy a "2 rounds" contract.)
             MIN_TOOL_ROUNDS = 2
-            if not collected_tool_calls and tools_called_count >= MIN_TOOL_ROUNDS:
-                logger.info("Research phase complete after %d steps, %d tools",
-                            step_num, tools_called_count)
+            if not collected_tool_calls and tool_rounds >= MIN_TOOL_ROUNDS:
+                logger.info("Research phase complete after %d steps, %d rounds, %d tools",
+                            step_num, tool_rounds, tools_called_count)
                 break
             elif not collected_tool_calls:
-                logger.info("LLM wanted to stop early (only %d tools so far), "
-                            "pushing for more research", tools_called_count)
+                logger.info("LLM wanted to stop early (only %d rounds so far), "
+                            "pushing for more research", tool_rounds)
                 # Prompt the LLM to continue searching
                 messages.append({
                     "role": "user",
@@ -280,7 +283,10 @@ class ResearchEngine:
             parallel_elapsed = time.monotonic() - parallel_start
 
             # Increment tool invocation counter
-            tools_called_count += len([1 for _, _, _, is_dup in tool_tasks if not is_dup])
+            real_calls = len([1 for _, _, _, is_dup in tool_tasks if not is_dup])
+            tools_called_count += real_calls
+            if real_calls > 0:
+                tool_rounds += 1
 
             # --- Yield progress for each action ---
             for (tc, fn_name, fn_args, is_dup), observation in zip(tool_tasks, results):
@@ -295,10 +301,31 @@ class ResearchEngine:
                 }
                 icon = icon_map.get(fn_name, "🔧")
                 desc = _tool_description(fn_name, fn_args)
+
+                # T5 要求：降级/超时/失败必须出现在用户可见的进度日志里，
+                # 不能只写进 LLM 消息历史
+                obs_str = str(observation)
+                extra = ""
+                if obs_str.startswith("[超时]"):
+                    icon = "⏱️"
+                    extra = f" — ⚠️ 超过 {PER_SEARCH_TIMEOUT}s，已跳过该来源"
+                elif obs_str.startswith("[search_site 降级]"):
+                    icon = "⚠️"
+                    extra = " — 站点无结果/超时，已降级为 Tavily 通用搜索"
+                elif obs_str.startswith("站点搜索失败"):
+                    icon = "❌"
+                    extra = " — 站点搜索失败，Tavily 降级也无结果"
+                elif obs_str.startswith("获取网页内容失败"):
+                    icon = "❌"
+                    extra = " — 抓取失败，已跳过"
+                elif obs_str.startswith("工具执行异常"):
+                    icon = "❌"
+                    extra = " — 执行异常，已跳过"
+
                 yield _sse("research_progress", {
                     "ts": _now(),
                     "icon": icon,
-                    "message": f"{desc}" + (" (跳过-重复)" if is_dup else ""),
+                    "message": f"{desc}{extra}" + (" (跳过-重复)" if is_dup else ""),
                 })
 
                 # Add tool result to conversation
@@ -369,35 +396,47 @@ class ResearchEngine:
         observation_str = str(observation) if not isinstance(observation, str) else observation
 
         if fn_name in ("search_web", "search_site"):
-            # Extract URLs from the formatted observation and fetch each
-            urls = _extract_urls(observation_str)
-            for url in urls:
+            # Extract URLs from the formatted observation and fetch each.
+            # 并行抓取（限 5 并发）：串行时 15-50 个 URL × 最多 15s 会让 SSE
+            # 静默数分钟；gather+Semaphore 把 Phase 1 压缩到最慢单个来源的耗时
+            new_urls = []
+            for url in _extract_urls(observation_str):
                 if url in self._fetched_urls:
                     continue
                 self._fetched_urls.add(url)
+                new_urls.append(url)
 
-                try:
-                    result = await asyncio.wait_for(
-                        fetch_url_content(url, max_chars=8000),
-                        timeout=PER_SEARCH_TIMEOUT,
-                    )
-                    if result.get("content") and not result.get("error"):
-                        title = _extract_title_from_content(result["content"]) or url
-                        site = _guess_site_name(url)
-                        n = await self.rc.add(
-                            content=result["content"],
-                            url=url,
-                            site=site,
-                            title=title,
+            if not new_urls:
+                return
+
+            sem = asyncio.Semaphore(5)
+
+            async def _fetch_and_store(url: str) -> None:
+                async with sem:
+                    try:
+                        result = await asyncio.wait_for(
+                            fetch_url_content(url, max_chars=8000),
+                            timeout=PER_SEARCH_TIMEOUT,
                         )
-                        self._total_chunks_stored += n
-                        logger.debug(
-                            "RC: stored %d chunks from %s (%s)", n, title[:60], url,
-                        )
-                except asyncio.TimeoutError:
-                    logger.warning("Full-text fetch timed out for %s", url)
-                except Exception as e:
-                    logger.warning("Full-text fetch failed for %s: %s", url, e)
+                        if result.get("content") and not result.get("error"):
+                            title = _extract_title_from_content(result["content"]) or url
+                            site = _guess_site_name(url)
+                            n = await self.rc.add(
+                                content=result["content"],
+                                url=url,
+                                site=site,
+                                title=title,
+                            )
+                            self._total_chunks_stored += n
+                            logger.debug(
+                                "RC: stored %d chunks from %s (%s)", n, title[:60], url,
+                            )
+                    except asyncio.TimeoutError:
+                        logger.warning("Full-text fetch timed out for %s", url)
+                    except Exception as e:
+                        logger.warning("Full-text fetch failed for %s: %s", url, e)
+
+            await asyncio.gather(*[_fetch_and_store(u) for u in new_urls])
 
         elif fn_name == "fetch_url":
             # The observation already contains the fetched content

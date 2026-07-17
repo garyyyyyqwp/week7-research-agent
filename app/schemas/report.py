@@ -177,7 +177,11 @@ class ReportRefineRequest(BaseModel):
     selected_text: str = Field(..., min_length=1, max_length=5000, description="用户选中的文字")
     context_before: str = Field(default="", max_length=2000, description="选区前文")
     context_after: str = Field(default="", max_length=2000, description="选区后文")
-    instruction: str = Field(default="使这段文字更加严谨和学术化", description="优化指令")
+    instruction: str = Field(
+        default="使这段文字更加严谨和学术化",
+        max_length=2000,
+        description="优化指令",
+    )
 
 
 class ReportRefineResponse(BaseModel):

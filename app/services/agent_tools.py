@@ -222,8 +222,18 @@ async def execute_search_site(
         logger.warning(
             "search_site(%s) failed/empty (%s), falling back to Tavily", site_id, fail_reason,
         )
-        # Run Tavily with the same query + site context
-        fallback_query = f"{query} site:{site_id}"
+        # site: 过滤必须用真实域名 —— "site:pubmed" 对搜索引擎是无效语法，
+        # 会返回任意网页却挂着权威站点的名字
+        _SITE_DOMAINS = {
+            "pubmed": "pubmed.ncbi.nlm.nih.gov",
+            "arxiv": "arxiv.org",
+            "semantic_scholar": "semanticscholar.org",
+            "who": "who.int",
+            "cdc": "cdc.gov",
+            "github": "github.com",
+        }
+        domain = _SITE_DOMAINS.get(site_id.lower())
+        fallback_query = f"{query} site:{domain}" if domain else query
         try:
             from app.services.web_search import search_web
             web_results = await search_web(fallback_query, num_results=num_results)

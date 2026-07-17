@@ -398,12 +398,13 @@ async def _search_via_jina_extraction(
     content = result.get("content", "")
 
     if not content or result.get("error"):
-        return [{
-            "title": f"{config.name} 搜索失败",
-            "url": search_url,
-            "snippet": f"无法从 {config.name} 获取内容: {result.get('error', 'Unknown error')}",
-            "published_date": "",
-        }]
+        # 返回空列表让 execute_search_site 走 Tavily 降级 —— 千万不能返回
+        # "搜索失败"占位条目：它会被注册成真引用进参考文献，还会撑大来源计数
+        logger.warning(
+            "Jina extraction failed for %s (%s), returning empty for fallback",
+            config.name, result.get("error", "empty content"),
+        )
+        return []
 
     # Try to extract structured results from the markdown
     # Jina typically returns the page as clean text — we extract potential
@@ -411,13 +412,13 @@ async def _search_via_jina_extraction(
     items = _parse_jina_search_results(content, config.name)
 
     if not items:
-        # Return the raw content as a single result
-        return [{
-            "title": f"{config.name} 搜索结果: {query}",
-            "url": search_url,
-            "snippet": content[:500],
-            "published_date": "",
-        }]
+        # 解析不出结构化条目（搜索页对启发式解析几乎必然失败）——同样返回空，
+        # 交给 Tavily 降级；不要把站点搜索页 URL 当结果返回
+        logger.info(
+            "Jina content from %s not parseable into results, "
+            "returning empty for fallback", config.name,
+        )
+        return []
 
     return items[:num_results]
 

@@ -5,14 +5,61 @@ Strategy:
   2. httpx + BeautifulSoup: fallback for when Jina is unavailable
 
 Returns clean, truncated Markdown suitable for LLM context.
+
+SSRF guard: validate_public_url() lives HERE (service layer) so that every
+caller is protected — the router-level Pydantic validator only covers
+POST /search/fetch, while the agent tool chain and research engine call
+fetch_url() directly.
 """
 
+import ipaddress
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# --- SSRF blocklist（服务层统一守卫）---
+_BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "metadata.google.internal"}
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("::1/128"),
+]
+
+
+def validate_public_url(url: str) -> str:
+    """Validate URL is safe to fetch server-side: http/https only, no private IPs.
+
+    Raises ValueError on unsafe URLs. Agent 工具链的 URL 来自 LLM 决策 +
+    抓取页面内容（可被间接注入），必须在这里而不是仅在路由层校验。
+    """
+    parsed = urlparse(url)
+
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise ValueError(f"不支持的协议: {parsed.scheme or '(无)'}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("无法解析URL中的主机名")
+    if hostname.lower() in _BLOCKED_HOSTS:
+        raise ValueError("不允许访问该主机")
+
+    # IP 字面量直接检查内网段（域名解析级校验的成本/收益比不适合本项目规模）
+    try:
+        addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        return url  # DNS 域名，放行
+    for net in _BLOCKED_NETWORKS:
+        if addr in net:
+            raise ValueError("不允许访问内网地址")
+    return url
 
 
 async def fetch_url(
@@ -38,6 +85,19 @@ async def fetch_url(
     content = ""
     error = None
     used_strategy = strategy
+
+    # SSRF 守卫：所有调用方（路由/Agent工具/研究引擎）统一在此拦截
+    try:
+        validate_public_url(url)
+    except ValueError as e:
+        logger.warning("fetch_url blocked unsafe URL %s: %s", url[:120], e)
+        return {
+            "url": url,
+            "content": "",
+            "full_length": 0,
+            "strategy": "blocked",
+            "error": f"URL 被安全策略拦截: {e}",
+        }
 
     try:
         if strategy == "jina":

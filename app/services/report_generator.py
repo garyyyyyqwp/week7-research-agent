@@ -422,10 +422,16 @@ def assemble_report(
     )
 
 
-def extract_citation_indices(text: str) -> list[int]:
+def extract_citation_indices(text: str, max_index: int | None = None) -> list[int]:
     """Extract citation indices like [1], [2,3], [4-6] from section text.
 
     Used to populate section.citations in the SSE section_end event.
+
+    Args:
+        text: Section text possibly containing [n] markers.
+        max_index: If given, only 1 <= idx <= max_index are kept — filters
+            out year spans like [2021-2025], scale cells like [0-100], and
+            hallucinated citation numbers beyond the registered sources.
     """
     indices: set[int] = set()
     # Match [n] or [n,m] or [n-m]
@@ -437,7 +443,11 @@ def extract_citation_indices(text: str) -> list[int]:
             if "-" in part:
                 try:
                     a, b = part.split("-", 1)
-                    indices.update(range(int(a), int(b) + 1))
+                    a_i, b_i = int(a), int(b)
+                    # 拒绝异常宽的区间（如年份 2021-2025 / 量表 0-100）
+                    if b_i - a_i > 20:
+                        continue
+                    indices.update(range(a_i, b_i + 1))
                 except ValueError:
                     pass
             else:
@@ -445,6 +455,11 @@ def extract_citation_indices(text: str) -> list[int]:
                     indices.add(int(part))
                 except ValueError:
                     pass
+
+    if max_index is not None:
+        indices = {i for i in indices if 1 <= i <= max_index}
+    else:
+        indices = {i for i in indices if i >= 1}
     return sorted(indices)
 
 

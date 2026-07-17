@@ -10,7 +10,7 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse, Response
 from sse_starlette.sse import EventSourceResponse
 
@@ -22,10 +22,26 @@ from app.schemas.report import (
 from app.services.report_generator import generate_report_stream
 from app.services.research_pipeline import run_research_pipeline
 from app.services.llm import get_client, get_model
+from app.utils.ratelimit import rate_limit, generation_guard
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["report"])
+
+
+def _strip_refine_prefix(refined: str) -> str:
+    """只剥离明确的解释前缀（"优化后：" / "优化结果：" 等），保留正文。
+
+    此前的 startswith("优化") 启发式会把「优化营商环境是当前重点…」这类
+    以"优化"开头的合法润色结果整行删掉 —— 内容损坏且无法恢复。
+    """
+    import re
+
+    return re.sub(
+        r'^\s*优化(?:后|结果|的文本|后的文字|后的结果)?[:：]\s*',
+        '',
+        refined,
+    ).strip()
 
 # In-memory report store (in production, use DB)
 _reports: dict[str, dict] = {}
@@ -36,7 +52,7 @@ _MAX_REPORTS = 50  # Prevent memory exhaustion
 # POST /api/v1/report/generate — 四阶段管道 SSE 流式生成研报 (Week 7)
 # ---------------------------------------------------------------------------
 
-@router.post("/generate")
+@router.post("/generate", dependencies=[Depends(rate_limit(3, 60))])
 async def generate_report(request: ReportGenerateRequest):
     """Generate a research report via the 4-phase research pipeline.
 
@@ -53,6 +69,9 @@ async def generate_report(request: ReportGenerateRequest):
       - Writes sections with real citations ([n] format)
     """
     report_id = uuid.uuid4().hex[:12]
+
+    # 全局并发上限：每条管道占大量内存与付费配额，超限直接 429 不排队
+    await generation_guard.acquire()
 
     async def event_generator():
         try:
@@ -87,6 +106,9 @@ async def generate_report(request: ReportGenerateRequest):
                     "phase": "generate",
                 }, ensure_ascii=False),
             }
+        finally:
+            # 无论正常完成/异常/客户端断开，都要释放并发额度
+            await generation_guard.release()
 
     return EventSourceResponse(event_generator())
 
@@ -95,7 +117,8 @@ async def generate_report(request: ReportGenerateRequest):
 # POST /api/v1/report/refine — 划词优化 (reused from Week 6)
 # ---------------------------------------------------------------------------
 
-@router.post("/refine", response_model=ReportRefineResponse)
+@router.post("/refine", response_model=ReportRefineResponse,
+             dependencies=[Depends(rate_limit(10, 60))])
 async def refine_text(request: ReportRefineRequest):
     """Refine a selected text passage with LLM assistance.
 
@@ -137,14 +160,9 @@ async def refine_text(request: ReportRefineRequest):
         )
 
         refined = (response.choices[0].message.content or "").strip()
-
-        # If LLM prepended explanation, strip it
-        if refined.startswith("优化"):
-            lines = refined.split("\n")
-            # Find the first non-empty line that might be the start of content
-            refined = "\n".join(lines[1:]).strip()
-            if not refined:
-                refined = lines[0]
+        refined = _strip_refine_prefix(refined)
+        if not refined:
+            raise HTTPException(status_code=502, detail="润色服务返回为空，请重试")
 
         return ReportRefineResponse(
             refined_text=refined,
@@ -209,17 +227,19 @@ async def export_report(
 
         try:
             md_content = report_data.get("markdown", "")
-            html = _md_to_html(md_content, report_data.get("report", {}).get("title", "Report"))
+            title = report_data.get("report", {}).get("title", "Report")
 
-            from weasyprint import HTML
-            import io
+            import anyio
 
-            pdf_bytes = io.BytesIO()
-            HTML(string=html).write_pdf(pdf_bytes)
-            pdf_bytes.seek(0)
+            # synchronous weasyprint render → anyio 线程池执行：
+            # 单 worker 下同步渲染会把事件循环冻结几十秒，期间所有 SSE
+            # 流、健康检查、其他请求全部停摆
+            pdf_data = await anyio.to_thread.run_sync(
+                _render_pdf_sync, md_content, title,
+            )
 
             return Response(
-                content=pdf_bytes.getvalue(),
+                content=pdf_data,
                 media_type="application/pdf",
                 headers={
                     "Content-Disposition": f"attachment; filename=report_{report_id}.pdf",
@@ -237,6 +257,42 @@ async def export_report(
             status_code=400,
             detail=f"不支持的导出格式: {format}。支持: md, pdf"
         )
+
+
+def _fonts_dir_uri() -> str:
+    """file:// URI prefix of the bundled fonts directory."""
+    from pathlib import Path
+    return (
+        Path(__file__).resolve().parent.parent.parent / "static" / "fonts"
+    ).as_uri()
+
+
+def _safe_pdf_url_fetcher(url: str, timeout: int = 10, ssl_context=None):
+    """weasyprint 资源抓取白名单 —— 只放行内置字体目录的 file:// URL。
+
+    研报 markdown 源自 LLM + 抓取的网页内容，可能被注入
+    <img src="file:///etc/passwd"> 或指向内网 (169.254.x.x 等) 的地址；
+    weasyprint 默认会在服务端抓取这些资源（SSRF / 本地文件读取）。
+    报告 PDF 不需要任何远程资源 —— 字体是唯一合法请求。
+    被拒的资源 weasyprint 会记 warning 并跳过（图片显示为 alt 文本），不崩溃。
+    """
+    if url.startswith(_fonts_dir_uri()):
+        # 延迟导入：仅放行分支需要 weasyprint（本地 Windows 无 GTK 时
+        # 拦截分支仍可独立测试）
+        from weasyprint import default_url_fetcher
+        return default_url_fetcher(url)
+    raise ValueError(f"blocked external resource in PDF render: {url[:120]}")
+
+
+def _render_pdf_sync(md_content: str, title: str) -> bytes:
+    """Markdown → styled HTML → PDF bytes（同步，供线程池调用）。"""
+    import io
+    from weasyprint import HTML
+
+    html = _md_to_html(md_content, title)
+    buf = io.BytesIO()
+    HTML(string=html, url_fetcher=_safe_pdf_url_fetcher).write_pdf(buf)
+    return buf.getvalue()
 
 
 def _detect_cjk_fonts() -> dict[str, str]:

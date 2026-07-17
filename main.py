@@ -35,12 +35,19 @@ app = FastAPI(
     version="0.2.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS：前端与 API 同源部署，默认不需要跨域；如需允许其他前端来源，
+# 用逗号分隔写入 CORS_ALLOW_ORIGINS 环境变量。不再使用 allow_origins=["*"]
+# （无鉴权 + 通配 CORS = 任何网页都能借访客浏览器消耗付费 API 配额）
+_cors_origins = [
+    o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()
+]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.middleware("http")
@@ -58,6 +65,10 @@ app.include_router(agent.router, prefix="/api/v1/agent")
 app.include_router(report.router, prefix="/api/v1/report")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# 提供 /static/vendor/*（本地化的 marked/DOMPurify）与内置字体等静态资源
+from fastapi.staticfiles import StaticFiles
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")

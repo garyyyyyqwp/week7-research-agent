@@ -32,6 +32,24 @@ logger = logging.getLogger(__name__)
 # Token-based text chunking
 # ---------------------------------------------------------------------------
 
+# tiktoken encoder 进程级单例：cl100k_base 的 BPE 文件首次使用会联网下载 (~1.7MB)，
+# Render 冷启动后每次 chunk_text 重复 get_encoding 会反复触发下载/磁盘读
+_TIKTOKEN_ENCODER = None
+_TIKTOKEN_TRIED = False
+
+
+def _get_encoder():
+    """Return a cached tiktoken encoder, or None if unavailable."""
+    global _TIKTOKEN_ENCODER, _TIKTOKEN_TRIED
+    if not _TIKTOKEN_TRIED:
+        _TIKTOKEN_TRIED = True
+        try:
+            import tiktoken
+            _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            logger.debug("tiktoken not available, using char-based chunking")
+    return _TIKTOKEN_ENCODER
+
 
 def _token_count(text: str, encoder=None) -> int:
     """Count tokens using tiktoken, or fall back to char-based estimate."""
@@ -64,12 +82,7 @@ def chunk_text(
     if not content or not content.strip():
         return []
 
-    encoder = None
-    try:
-        import tiktoken
-        encoder = tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        logger.debug("tiktoken not available, using char-based chunking")
+    encoder = _get_encoder()
 
     total_tokens = _token_count(content, encoder)
     chunk_size_tokens = target_tokens
@@ -152,6 +165,50 @@ class ResearchContext:
         """Whether the context is operating in degraded (no-ChromaDB) mode."""
         return self._degraded
 
+    def _migrate_collection_to_fallback(self) -> None:
+        """Copy chunks already stored in ChromaDB into the fallback list.
+
+        Must run BEFORE flipping to degraded mid-run: degraded retrieve()
+        only reads _fallback, so without migration every chunk indexed
+        before the failure would be silently stranded and Phase 3 would
+        write sections from a fraction of the collected sources.
+        """
+        if self._collection is None:
+            return
+        try:
+            data = self._collection.get(include=["documents", "metadatas"])
+            docs = data.get("documents") or []
+            metas = data.get("metadatas") or []
+            existing = {
+                (item["url"], item.get("chunk_idx", -1)) for item in self._fallback
+            }
+            migrated = 0
+            for doc, m in zip(docs, metas):
+                m = m or {}
+                key = (m.get("url", ""), m.get("chunk_idx", -1))
+                if key in existing:
+                    continue
+                self._fallback.append({
+                    "content": doc,
+                    "url": m.get("url", ""),
+                    "site": m.get("site", ""),
+                    "title": m.get("title", ""),
+                    "chunk_idx": m.get("chunk_idx", -1),
+                })
+                existing.add(key)
+                migrated += 1
+            if migrated:
+                logger.info(
+                    "ResearchContext[%s]: migrated %d chunks from ChromaDB "
+                    "to fallback before degrading",
+                    self.report_id, migrated,
+                )
+        except Exception as e:
+            logger.warning(
+                "ResearchContext[%s]: collection migration failed: %s",
+                self.report_id, e,
+            )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -209,6 +266,7 @@ class ResearchContext:
                 "switching to degraded mode: %s",
                 self.report_id, title[:60], e,
             )
+            self._migrate_collection_to_fallback()
             self._degraded = True
             for i, chunk in enumerate(chunks):
                 self._fallback.append({
@@ -244,6 +302,7 @@ class ResearchContext:
                 "switching to degraded mode: %s",
                 self.report_id, e,
             )
+            self._migrate_collection_to_fallback()
             self._degraded = True
             for i, chunk in enumerate(chunks):
                 self._fallback.append({
@@ -305,6 +364,10 @@ class ResearchContext:
                 "degrading: %s",
                 self.report_id, e,
             )
+            # 关键：正常模式下 chunks 都在 ChromaDB 里，_fallback 是空的。
+            # 必须先迁移再降级检索，否则本节及后续节全部拿到 0 条材料。
+            self._migrate_collection_to_fallback()
+            self._degraded = True
             return self._retrieve_degraded(section_title, top_k)
 
     def cleanup(self):
@@ -312,13 +375,13 @@ class ResearchContext:
 
         Idempotent - safe to call multiple times. Exceptions are swallowed
         because cleanup must never crash the pipeline.
-        """
-        if self._degraded:
-            self._fallback.clear()
-            logger.debug("ResearchContext[%s]: fallback cleared", self.report_id)
-            return
 
-        if self._client is not None and self._collection is not None:
+        Note: the collection is deleted whenever a client exists, regardless
+        of the degraded flag — mid-run degradation would otherwise leak the
+        already-created collection.
+        """
+        self._fallback.clear()
+        if self._client is not None:
             try:
                 self._client.delete_collection(self.collection_name)
                 logger.info(
