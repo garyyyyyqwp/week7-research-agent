@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>研究报告智能体 — Week 7</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<!-- 本地 vendored 依赖（固定版本，无 CDN：大陆网络下 jsdelivr 不稳定会让渲染直接失效） -->
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
 <style>
 :root {
   --bg-0: #0a0a0f; --bg-1: #111118; --bg-2: #18181f; --bg-3: #1e1e28;
@@ -214,6 +216,15 @@ textarea { resize: none; line-height: 1.5; }
   margin-right: 16px;
 }
 .toolbar-btns { display: flex; gap: 8px; flex-shrink: 0; }
+/* 右栏顶部章节进度 n/N（规格 T4 要求进度在右栏可见） */
+.section-progress {
+  font-size: 12px;
+  color: var(--accent2);
+  font-weight: 600;
+  margin-right: 12px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
 .btn-tool {
   padding: 6px 14px;
   background: var(--bg-2);
@@ -245,7 +256,7 @@ textarea { resize: none; line-height: 1.5; }
   padding: 28px 32px;
   font-size: 14px;
   line-height: 1.85;
-  max-width: 860px;
+  max-width: 800px;
   width: 100%;
   align-self: center;
 }
@@ -469,6 +480,7 @@ textarea { resize: none; line-height: 1.5; }
     <!-- Toolbar -->
     <div class="report-toolbar">
       <div class="report-title" id="reportTitle">研究报告预览</div>
+      <span class="section-progress" id="sectionProgress"></span>
       <div class="toolbar-btns">
         <button class="btn-tool" id="btnCopy" disabled title="复制全文到剪贴板">📋 复制</button>
         <button class="btn-tool" id="btnExportMd" disabled>📥 下载 MD</button>
@@ -511,12 +523,18 @@ let selectedText = '';
 let selectedRange = null;
 let originalRefineText = null;       // single-level undo
 let originalRefineNode = null;       // DOM node before replacement
+let lastRefine = null;               // {original, refined} — 用于撤销时同步数据层
 let sectionContents = {};            // accumulated raw markdown per section
 let totalSections = 0;
+let completedSections = 0;
 let aborted = false;
 let abortController = null;
 let reconnectAttempts = 0;
 let currentGenParams = null;
+let lastEventAt = 0;                 // watchdog: 上次收到任何字节的时间
+let watchdogTimer = null;
+let watchdogFired = false;
+let sawTerminalEvent = false;        // 是否收到 done/report_complete/error
 
 // =====================================================================
 // Reconnect button
@@ -575,6 +593,13 @@ async function retryGenerate() {
 // Generate Report
 // =====================================================================
 async function generateReport(overrideParams) {
+  // ★ In-flight guard：Enter 键 / 旧的重试链接不允许并发第二条生成流
+  //   （两条 SSE 流会交叉写同一批 section DOM，报告直接花掉）
+  if (abortController) {
+    addLogLine('⏸', '已有生成任务进行中，请先停止或等待完成', 'warn');
+    return;
+  }
+
   // Only treat overrideParams as real params if it has a topic property
   // (otherwise it's a raw click event from addEventListener)
   const isOverride = overrideParams && typeof overrideParams === 'object' && 'topic' in overrideParams;
@@ -592,12 +617,20 @@ async function generateReport(overrideParams) {
 
   // Reset state
   aborted = false;
+  watchdogFired = false;
+  sawTerminalEvent = false;
   abortController = new AbortController();
   reportMarkdown = '';
   reportJson = null;
   reportId = null;
+  lastRefine = null;
+  originalRefineText = null;
+  originalRefineNode = null;
   sectionContents = {};
   totalSections = 0;
+  completedSections = 0;
+  document.getElementById('refinePopover').classList.remove('visible');
+  document.getElementById('sectionProgress').textContent = '';
   if (!overrideParams) {
     document.getElementById('reportViewer').innerHTML = '';
     document.getElementById('reportTitle').textContent = '研究报告预览';
@@ -638,6 +671,7 @@ async function generateReport(overrideParams) {
     if (!resp.ok) {
       const errText = await resp.text();
       addLogLine('❌', `HTTP ${resp.status}: ${errText.slice(0, 200)}`, 'error');
+      stopWatchdog();
       resetUI();
       return;
     }
@@ -647,9 +681,15 @@ async function generateReport(overrideParams) {
     let buffer = '';
     let currentEvent = '';
 
+    // ★ Watchdog：60s 没收到任何字节（包括 sse ping）判定连接假死并中断，
+    //   否则 Wi-Fi 切换/NAT 静默断链会让 UI 永远卡在"生成中"
+    lastEventAt = Date.now();
+    startWatchdog();
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      lastEventAt = Date.now();
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -669,25 +709,51 @@ async function generateReport(overrideParams) {
         }
       }
     }
+
+    // ★ 干净 EOF 但没有终止事件 = 服务端/代理中途断流 —— 明确告知并给重试入口，
+    //   不能静默截断让用户以为报告"就这么短"
+    if (!aborted && !sawTerminalEvent) {
+      addLogLine('⚠️', '连接中断，报告不完整（未收到完成事件）', 'error');
+      showRetryLink();
+    }
   } catch (e) {
-    if (e.name === 'AbortError') {
+    if (e.name === 'AbortError' && watchdogFired) {
+      addLogLine('⏱️', '连接超时（60s 无数据），已中断', 'error');
+      showRetryLink();
+    } else if (e.name === 'AbortError') {
       addLogLine('⏹', '用户停止生成', 'warn');
     } else {
       addLogLine('❌', `连接错误: ${e.message}`, 'error');
-      addLogLine('🔄', '点击「生成研报」重试，或检查网络连接', 'warn');
-      // Show retry button inline if we have saved params
-      if (currentGenParams) {
-        const log = document.getElementById('progressLog');
-        const retryDiv = document.createElement('div');
-        retryDiv.className = 'line';
-        retryDiv.innerHTML = `<span class="icon">🔄</span><a href="#" onclick="retryGenerate();return false" style="color:var(--accent);text-decoration:underline">点击此处重新连接</a>`;
-        log.appendChild(retryDiv);
-        log.scrollTop = log.scrollHeight;
-      }
+      showRetryLink();
     }
   }
 
+  stopWatchdog();
   if (!aborted) resetUI();
+}
+
+function startWatchdog() {
+  stopWatchdog();
+  watchdogTimer = setInterval(() => {
+    if (abortController && Date.now() - lastEventAt > 60000) {
+      watchdogFired = true;
+      abortController.abort();
+    }
+  }, 10000);
+}
+
+function stopWatchdog() {
+  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+}
+
+function showRetryLink() {
+  if (!currentGenParams) return;
+  const log = document.getElementById('progressLog');
+  const retryDiv = document.createElement('div');
+  retryDiv.className = 'line';
+  retryDiv.innerHTML = `<span class="icon">🔄</span><a href="#" onclick="retryGenerate();return false" style="color:var(--accent);text-decoration:underline">点击此处重新生成</a>`;
+  log.appendChild(retryDiv);
+  log.scrollTop = log.scrollHeight;
 }
 
 function resetUI() {
@@ -697,6 +763,8 @@ function resetUI() {
   btnGen.textContent = '⚡ 生成研报';
   btnStop.classList.remove('visible');
   document.getElementById('progressWrap').classList.remove('visible');
+  stopWatchdog();
+  abortController = null;   // 释放 in-flight guard，允许下一次生成
 }
 
 function addLogLine(icon, message, cls, tsIso) {
@@ -715,6 +783,16 @@ function addLogLine(icon, message, cls, tsIso) {
 // =====================================================================
 // SSE Event Handler
 // =====================================================================
+
+// DOMPurify 白名单消毒：真实网页抓取内容 → LLM 输出 → marked → innerHTML
+// 的必经关口（网页标题/正文可携带 <img onerror=...> 等注入）
+function sanitizeHtml(html) {
+  if (window.DOMPurify) {
+    return DOMPurify.sanitize(html);
+  }
+  return escapeHtml(html);  // 极端兜底：库加载失败时降级为纯文本
+}
+
 function handleSSEEvent(event, data) {
   switch (event) {
 
@@ -822,13 +900,15 @@ function handleSSEEvent(event, data) {
           html = html.replace(/\[(\d+)\]/g, (m, num) =>
             `<sup class="citation-link">[${num}]<span class="citation-tooltip">引用 [${num}]</span></sup>`
           );
-          contentDiv.innerHTML = html;
+          contentDiv.innerHTML = sanitizeHtml(html);
         }
       }
-      // Auto-scroll to current section bottom
+      // Auto-scroll —— 仅当用户本来就在底部附近时才跟随，
+      // 否则回看前文/划词选择会被每个 chunk 强行拽回底部
       {
         const viewer = document.getElementById('reportViewer');
-        viewer.scrollTop = viewer.scrollHeight;
+        const atBottom = viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 80;
+        if (atBottom) viewer.scrollTop = viewer.scrollHeight;
       }
       break;
 
@@ -837,6 +917,9 @@ function handleSSEEvent(event, data) {
       {
         const pct = totalSections ? Math.round(((data.index + 1) / totalSections) * 100) : 0;
         document.getElementById('progressBar').style.width = pct + '%';
+        completedSections = data.index + 1;
+        document.getElementById('sectionProgress').textContent =
+          totalSections ? `${completedSections}/${totalSections} 节` : '';
 
         const secEl = document.getElementById(`section-${data.index}`);
         if (secEl) secEl.classList.remove('section-current');
@@ -850,7 +933,7 @@ function handleSSEEvent(event, data) {
           html = html.replace(/\[(\d+)\]/g, (m, num) =>
             `<sup class="citation-link">[${num}]<span class="citation-tooltip">引用 [${num}]</span></sup>`
           );
-          contentDiv.innerHTML = html;
+          contentDiv.innerHTML = sanitizeHtml(html);
         }
         sectionContents[data.index] = data.content;
       }
@@ -879,8 +962,8 @@ function handleSSEEvent(event, data) {
       {
         const v3 = document.getElementById('reportViewer');
         const refDiv = document.createElement('div');
-        let refHtml = marked.parse(data.references || '');
-        refDiv.innerHTML = refHtml;
+        // ★ 消毒必经：引用标题来自真实抓取的网页 <title>，是最直接的注入面
+        refDiv.innerHTML = sanitizeHtml(marked.parse(data.references || ''));
         v3.appendChild(refDiv);
 
         addLogLine('📚', `参考文献: ${data.citations_json?.count || 0} 条`, 'info');
@@ -897,6 +980,7 @@ function handleSSEEvent(event, data) {
       reportMarkdown = data.markdown || '';
       reportJson = data.report || null;
       reportId = data.report_id || null;
+      sawTerminalEvent = true;
 
       document.getElementById('progressBar').style.width = '100%';
       document.getElementById('btnExportMd').disabled = false;
@@ -907,6 +991,7 @@ function handleSSEEvent(event, data) {
 
     case 'done':
       // {report_id, sources, sections, elapsed_s}
+      sawTerminalEvent = true;
       document.getElementById('progressWrap').classList.remove('visible');
       addLogLine('✅', `全部完成 (${data.sections || 0}节, ${data.sources || 0}源, ${data.elapsed_s || '?'}s)`, 'info');
       break;
@@ -914,6 +999,7 @@ function handleSSEEvent(event, data) {
     // ---- Error ----
     case 'error':
       // {message, phase, detail?}
+      sawTerminalEvent = true;
       const phaseMap = {
         'research': '研究阶段',
         'outline': '大纲生成',
@@ -943,8 +1029,10 @@ function populateCitationTooltips(citations) {
     if (!c) return;
     const tip = el.querySelector('.citation-tooltip');
     if (tip) {
-      tip.innerHTML = `<strong>${escapeHtml(c.title || '')}</strong><br>
-                       <span style="color:var(--text-3);font-size:11px">${escapeHtml(c.site_name || '')} · ${escapeHtml(c.url || '')}</span>`;
+      const snippet = (c.snippet || '').slice(0, 150);
+      tip.innerHTML = `<strong>${escapeHtml(c.title || '')}</strong><br>` +
+        (snippet ? `<span style="font-size:11px">${escapeHtml(snippet)}${(c.snippet || '').length > 150 ? '…' : ''}</span><br>` : '') +
+        `<span style="color:var(--text-3);font-size:11px">${escapeHtml(c.site_name || '')} · ${escapeHtml(c.url || '')}</span>`;
     }
   });
 }
@@ -962,6 +1050,10 @@ function scrollToSection(index) {
 document.getElementById('reportViewer').addEventListener('mouseup', function(e) {
   // Debounce: ignore immediate re-trigger
   setTimeout(() => {
+    // ★ 生成中禁用划词：下一个 section_chunk 的整节重渲染会直接吞掉
+    //   优化结果（用户白等一次 LLM 调用），完成后再开放
+    if (abortController) return;
+
     const selection = window.getSelection();
     const text = selection.toString().trim();
 
@@ -1001,6 +1093,16 @@ async function doRefine(undoMode) {
   // undoMode: if true, restore original text
   if (undoMode) {
     if (originalRefineNode && originalRefineText !== null) {
+      // ★ 诚实汇报：若原节点已被重渲染挤出 DOM（如生成期间的整节重绘），
+      //   撤销是不可能的，不能假报「已撤销」
+      if (!originalRefineNode.isConnected) {
+        document.getElementById('refineStatus').textContent = '原文已被重新渲染，无法撤销';
+        originalRefineText = null;
+        originalRefineNode = null;
+        document.getElementById('btnUndo').style.display = 'none';
+        document.getElementById('refinePopover').classList.remove('visible');
+        return;
+      }
       const parent = originalRefineNode.parentNode;
       if (parent) {
         // Multi-node selection undo: restore from stored fragment
@@ -1014,6 +1116,11 @@ async function doRefine(undoMode) {
           // Simple single-node undo
           const textNode = document.createTextNode(originalRefineText);
           parent.replaceChild(textNode, originalRefineNode);
+        }
+        // 数据层同样回滚，保证导出与显示一致
+        if (lastRefine) {
+          syncRefineToData(lastRefine.refined, lastRefine.original);
+          lastRefine = null;
         }
       }
       originalRefineText = null;
@@ -1060,7 +1167,13 @@ async function doRefine(undoMode) {
     });
 
     const data = await resp.json();
+    if (!resp.ok) {
+      throw new Error(data.detail || `HTTP ${resp.status}`);
+    }
     const refinedText = data.refined_text;
+    if (!refinedText) {
+      throw new Error('优化服务返回为空');
+    }
 
     // Replace selected text in DOM — handle both single-node and multi-node selections
     if (selectedRange) {
@@ -1121,16 +1234,58 @@ async function doRefine(undoMode) {
       // Show undo button
       document.getElementById('btnUndo').style.display = 'block';
       document.getElementById('btnUndo').onclick = () => doRefine(true);
-      document.getElementById('refineStatus').textContent = '已优化 · 可撤销';
+
+      // ★ 核心修复：把优化结果同步回数据层（reportMarkdown/sectionContents/
+      //   reportJson）。否则「下载 MD / 复制 / 服务端 PDF」导出的全是优化前
+      //   的文本 —— 用户的优化工作在主要交付物里被静默丢弃
+      lastRefine = { original: selectedText, refined: refinedText };
+      const synced = syncRefineToData(selectedText, refinedText);
+      document.getElementById('refineStatus').innerHTML = synced
+        ? '<span style="color:#10b981">已优化</span> · 可撤销'
+        : '<span style="color:#f59e0b">已优化</span> · 选区跨格式标记，MD 导出可能未同步此处';
     }
 
     // Don't auto-hide popover after refine — let user do more or undo
-    status.innerHTML = '<span style="color:#10b981">已优化</span> · 可撤销';
   } catch (e) {
     status.textContent = `失败: ${e.message}`;
   }
 
   btn.disabled = false;
+}
+
+// 把一次划词优化（或其撤销）同步进所有数据层副本；返回是否成功匹配。
+// 选中文本若含加粗/引用标记等 markdown 语法渲染差异，可能匹配不到 ——
+// 返回 false 让调用方如实提示，而不是假装同步成功。
+function syncRefineToData(fromText, toText) {
+  if (!fromText || fromText === toText) return false;
+  let synced = false;
+
+  if (reportMarkdown && reportMarkdown.includes(fromText)) {
+    reportMarkdown = reportMarkdown.replace(fromText, toText);
+    synced = true;
+  }
+  for (const k of Object.keys(sectionContents)) {
+    const c = sectionContents[k];
+    if (c && c.includes(fromText)) {
+      sectionContents[k] = c.replace(fromText, toText);
+      synced = true;
+      break;
+    }
+  }
+  if (reportJson && Array.isArray(reportJson.sections)) {
+    for (const sec of reportJson.sections) {
+      if (sec.content && sec.content.includes(fromText)) {
+        sec.content = sec.content.replace(fromText, toText);
+        synced = true;
+        break;
+      }
+    }
+  }
+  if (reportJson && reportJson.abstract && reportJson.abstract.includes(fromText)) {
+    reportJson.abstract = reportJson.abstract.replace(fromText, toText);
+    synced = true;
+  }
+  return synced;
 }
 
 // Wire refine button
@@ -1186,8 +1341,11 @@ async function exportReport(format) {
           URL.revokeObjectURL(url);
           return;
         }
+        // ★ 不再静默降级：免费实例休眠重启后内存报告会失效(404)，
+        //   用户需要知道为什么拿到的是打印对话框而不是服务端 PDF
+        addLogLine('⚠️', `服务端 PDF 不可用 (HTTP ${resp.status}，服务可能已重启)，改用浏览器打印导出`, 'warn');
       } catch (e) {
-        // Fall through to window.print()
+        addLogLine('⚠️', `服务端 PDF 请求失败 (${e.message})，改用浏览器打印导出`, 'warn');
       }
     }
     // Fallback: window.print()
@@ -1213,6 +1371,11 @@ async function exportReport(format) {
         th { background: #f0f0f0; }
         pre { background: #f5f5f5; padding: 12px; border-radius: 4px; font-size: 12px; }
         code { background: #f5f5f5; padding: 1px 4px; }
+        /* 打印必须隐藏 hover tooltip，否则每个 [n] 后面会内联印出
+           "标题·URL"全文；划词高亮底色也要清掉（!important 覆盖行内样式） */
+        .citation-tooltip { display: none !important; }
+        sup.citation-link { color: #2563eb; text-decoration: none; }
+        [data-refined] { background: none !important; }
         @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
       </style></head>
       <body>${html}</body></html>
