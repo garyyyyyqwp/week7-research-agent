@@ -240,15 +240,35 @@ async def export_report(
 
 
 def _md_to_html(md_content: str, title: str = "Research Report") -> str:
-    """Convert Markdown to styled HTML for PDF rendering."""
+    """Convert Markdown to styled HTML for PDF rendering.
+
+    Uses cross-platform CJK font fallback chain and avoids
+    `@page @top-center content` which weasyprint sometimes mishandles.
+    """
     import html as _html
     import markdown
+    import re as _re
 
+    # Escape for HTML attribute context (CSS content would need different escaping)
     safe_title = _html.escape(title)
+    # Escape internal quotes for CSS string safety
+    css_title = safe_title.replace('"', '\\"').replace("'", "\\'")
 
     html_body = markdown.markdown(
         md_content,
         extensions=["tables", "fenced_code", "codehilite"],
+    )
+
+    # Wrap tables in a div with page-break control so they don't split mid-table
+    html_body = _re.sub(
+        r'(<table)',
+        r'<div style="page-break-inside: avoid">\1',
+        html_body,
+    )
+    html_body = _re.sub(
+        r'(</table>)',
+        r'\1</div>',
+        html_body,
     )
 
     return f"""<!DOCTYPE html>
@@ -260,28 +280,77 @@ def _md_to_html(md_content: str, title: str = "Research Report") -> str:
   @page {{
     size: A4;
     margin: 2cm;
-    @top-center {{
-      content: "{safe_title}";
-      font-size: 10pt;
-      color: #666;
-    }}
   }}
   body {{
-    font-family: "SimSun", "Noto Sans CJK SC", "Source Han Sans CN", serif;
+    font-family: "Source Han Serif SC", "Noto Serif CJK SC",
+                 "SimSun", "Songti SC",
+                 "AR PL UMing CN", serif;
     font-size: 12pt;
     line-height: 1.8;
     color: #222;
+    orphans: 3;
+    widows: 3;
   }}
-  h1 {{ font-size: 20pt; text-align: center; margin-bottom: 1em; }}
-  h2 {{ font-size: 16pt; border-bottom: 2px solid #333; padding-bottom: 4px; margin-top: 1.5em; }}
-  h3 {{ font-size: 14pt; margin-top: 1em; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
-  th, td {{ border: 1px solid #ccc; padding: 6px 10px; text-align: left; }}
+  h1 {{
+    font-size: 20pt;
+    text-align: center;
+    margin-bottom: 1em;
+    page-break-before: avoid;
+    page-break-after: avoid;
+  }}
+  h2 {{
+    font-size: 16pt;
+    border-bottom: 2px solid #333;
+    padding-bottom: 4px;
+    margin-top: 1.5em;
+    page-break-after: avoid;
+  }}
+  h3 {{ font-size: 14pt; margin-top: 1em; page-break-after: avoid; }}
+  p {{ orphans: 3; widows: 3; }}
+  table {{
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    page-break-inside: avoid;
+  }}
+  th, td {{
+    border: 1px solid #ccc;
+    padding: 6px 10px;
+    text-align: left;
+    word-break: break-word;
+  }}
   th {{ background-color: #f0f0f0; }}
-  code {{ background: #f5f5f5; padding: 1px 4px; font-size: 10pt; }}
-  pre {{ background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; }}
-  blockquote {{ border-left: 4px solid #ccc; padding-left: 1em; color: #555; }}
+  code {{
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code",
+                 "Noto Sans Mono", monospace;
+    background: #f5f5f5;
+    padding: 1px 4px;
+    font-size: 10pt;
+  }}
+  pre {{
+    background: #f5f5f5;
+    padding: 12px;
+    border-radius: 4px;
+    overflow-x: auto;
+    page-break-inside: avoid;
+  }}
+  pre code {{ background: none; padding: 0; }}
+  blockquote {{
+    border-left: 4px solid #ccc;
+    padding-left: 1em;
+    margin: 1em 0;
+    color: #555;
+    page-break-inside: avoid;
+  }}
   img {{ max-width: 100%; }}
+  ul, ol {{ page-break-inside: avoid; }}
+  /* Syntax-highlighting base colors for codehilite */
+  .hll {{ background-color: #ffffcc; }}
+  .c {{ color: #999988; font-style: italic; }}
+  .k {{ font-weight: bold; }}
+  .s {{ color: #d14; }}
+  .mi {{ color: #099; }}
+  .mf {{ color: #099; }}
 </style>
 </head>
 <body>
