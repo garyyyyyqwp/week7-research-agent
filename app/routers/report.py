@@ -239,19 +239,111 @@ async def export_report(
         )
 
 
+def _detect_cjk_font_url() -> str | None:
+    """Return a file:// URL of an available CJK font on the system, or None.
+
+    WeasyPrint (Pango/fontconfig) does NOT reliably pick up Windows/Linux CJK
+    fonts by family name only — it walks fontconfig's registered set, and on
+    a default Linux container (e.g. Render) that set has no CJK entries. So
+    we explicitly point Pango at a font file that physically exists on disk.
+
+    Search order:
+      1. Project-bundled fonts under <repo>/static/fonts/
+      2. Common system locations (Windows / macOS / Linux)
+      3. Last-resort scan: any .ttc/.otf in well-known font dirs
+    """
+    import glob
+    import os
+    import platform
+    from pathlib import Path
+
+    # 1) 项目内置字体(最可靠,任何环境都生效)
+    project_fonts = Path(__file__).resolve().parent.parent.parent / "static" / "fonts"
+    if project_fonts.is_dir():
+        for ext in ("ttc", "otf", "ttf"):
+            for p in sorted(project_fonts.glob(f"*.{ext}")):
+                normalized = str(p).replace("\\", "/")
+                if normalized.startswith("/"):
+                    return f"file://{normalized}"
+                return f"file:///{normalized}"
+
+    system = platform.system()
+    candidates: list[str] = []
+
+    if system == "Windows":
+        fonts_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Fonts")
+        for name in (
+            "msyh.ttc", "msyhbd.ttc", "simhei.ttf",
+            "simsun.ttc", "simfang.ttf", "simkai.ttf",
+        ):
+            candidates.append(os.path.join(fonts_dir, name))
+    elif system == "Darwin":
+        candidates = [
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/Library/Fonts/Arial Unicode.ttf",
+        ]
+    else:  # Linux / containers / Render
+        candidates = [
+            # fonts-noto-cjk 包的常见路径(不同 Ubuntu 版本略有差异)
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+            # 文泉驿
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            # 其他可能位置
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        ]
+
+    for path in candidates:
+        if os.path.exists(path):
+            normalized = path.replace("\\", "/")
+            if normalized.startswith("/"):
+                return f"file://{normalized}"
+            return f"file:///{normalized}"
+
+    # 3) 最后兜底:在常见字体目录里 glob 所有 CJK 相关文件
+    fallback_dirs = [
+        "/usr/share/fonts/opentype/noto",
+        "/usr/share/fonts/truetype/noto",
+        "/usr/share/fonts/wqy-zenhei",
+        "/usr/share/fonts/truetype/wqy",
+    ]
+    if system == "Windows":
+        fallback_dirs.insert(
+            0,
+            os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Fonts"),
+        )
+
+    for d in fallback_dirs:
+        if os.path.isdir(d):
+            for ext in ("ttc", "otf", "ttf"):
+                matches = sorted(glob.glob(os.path.join(d, f"*.{ext}")))
+                if matches:
+                    normalized = matches[0].replace("\\", "/")
+                    if normalized.startswith("/"):
+                        return f"file://{normalized}"
+                    return f"file:///{normalized}"
+    return None
+
+
 def _md_to_html(md_content: str, title: str = "Research Report") -> str:
     """Convert Markdown to styled HTML for PDF rendering.
 
-    Uses cross-platform CJK font fallback chain and avoids
-    `@page @top-center content` which weasyprint sometimes mishandles.
+    Key fix: WeasyPrint (Pango) can't auto-discover CJK fonts by family name
+    on a default Windows install. We therefore load a CJK .ttf/.ttc file
+    directly via @font-face with a file:// URL, so the renderer is forced
+    to use it for all CJK glyphs.
     """
     import html as _html
     import markdown
     import re as _re
 
-    # Escape for HTML attribute context (CSS content would need different escaping)
     safe_title = _html.escape(title)
-    # Escape internal quotes for CSS string safety
     css_title = safe_title.replace('"', '\\"').replace("'", "\\'")
 
     html_body = markdown.markdown(
@@ -259,17 +351,25 @@ def _md_to_html(md_content: str, title: str = "Research Report") -> str:
         extensions=["tables", "fenced_code", "codehilite"],
     )
 
-    # Wrap tables in a div with page-break control so they don't split mid-table
-    html_body = _re.sub(
-        r'(<table)',
-        r'<div style="page-break-inside: avoid">\1',
-        html_body,
-    )
-    html_body = _re.sub(
-        r'(</table>)',
-        r'\1</div>',
-        html_body,
-    )
+    # 把 table 包一层 div,避免分页拆开
+    html_body = _re.sub(r'(<table)', r'<div style="page-break-inside: avoid">\1', html_body)
+    html_body = _re.sub(r'(</table>)', r'\1</div>', html_body)
+
+    # 显式注册一个 CJK 字体文件,只有当 Pango 真的能读到时才有意义
+    cjk_url = _detect_cjk_font_url()
+    font_face_css = ""
+    if cjk_url:
+        # .ttc 是 truetype collection,用 truetype format;扩展名推断
+        ext = cjk_url.rsplit(".", 1)[-1].lower()
+        fmt = "truetype" if ext in ("ttf", "ttc") else "opentype"
+        font_face_css = f"""
+@font-face {{
+  font-family: 'ProjectCJK';
+  src: url('{cjk_url}') format('{fmt}');
+  font-weight: normal;
+  font-style: normal;
+}}
+"""
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -281,10 +381,13 @@ def _md_to_html(md_content: str, title: str = "Research Report") -> str:
     size: A4;
     margin: 2cm;
   }}
+  {font_face_css}
   body {{
-    font-family: "Source Han Serif SC", "Noto Serif CJK SC",
-                 "SimSun", "Songti SC",
-                 "AR PL UMing CN", serif;
+    /* 'ProjectCJK' 来自上面的 @font-face,后面是常见中文字体名兜底 */
+    font-family: "ProjectCJK", "Microsoft YaHei", "微软雅黑",
+                 "PingFang SC", "Heiti SC", "SimHei", "黑体",
+                 "SimSun", "宋体", "Noto Sans CJK SC", "Source Han Sans CN",
+                 "WenQuanYi Micro Hei", serif;
     font-size: 12pt;
     line-height: 1.8;
     color: #222;

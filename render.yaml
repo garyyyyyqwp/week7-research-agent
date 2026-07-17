@@ -3,7 +3,10 @@ services:
     name: week7task
     runtime: python
     region: singapore
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      apt-get update &&
+      apt-get install -y --no-install-recommends fonts-noto-cjk fonts-noto-cjk-extra &&
+      pip install --no-cache-dir -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 120
     healthCheckPath: /health
     envVars:
