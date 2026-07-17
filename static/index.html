@@ -575,7 +575,10 @@ async function retryGenerate() {
 // Generate Report
 // =====================================================================
 async function generateReport(overrideParams) {
-  const params = overrideParams || {
+  // Only treat overrideParams as real params if it has a topic property
+  // (otherwise it's a raw click event from addEventListener)
+  const isOverride = overrideParams && typeof overrideParams === 'object' && 'topic' in overrideParams;
+  const params = isOverride ? overrideParams : {
     topic: document.getElementById('topicInput').value.trim(),
     numSections: parseInt(document.getElementById('numSections').value) || 5,
     language: document.getElementById('langSelect').value,
