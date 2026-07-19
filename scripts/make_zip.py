@@ -18,7 +18,16 @@ exclude_dirs = {
     ".git", ".venv", ".claude", "__pycache__", ".pytest_cache",
     "chroma_data", "data", "node_modules",
 }
-exclude_files = {".env", "week7task.zip", "week7task-clean.zip"}
+exclude_files = {
+    ".env", "week7task.zip", "week7task-clean.zip",
+    # 旧版备份/中间文件不进入交付压缩包
+    "index_week6_backup.html",
+}
+# scripts/ 目录只保留交付相关的脚本（不含 Week 6 遗留的 verify_module* / demo_agent）
+_script_allowlist = {
+    "run_pipeline_demo.py", "make_zip.py", "pack_context.py",
+    "verify_week7.py", "__init__.py",
+}
 exclude_suffixes = {".pyc", ".zip"}
 # Dotfiles to include (whitelist)
 include_dotfiles = {".env.example", ".gitignore", ".python-version"}
@@ -40,6 +49,10 @@ with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
                 continue
             if any(fname.endswith(sfx) for sfx in exclude_suffixes):
                 continue
+            # scripts/ 白名单过滤（不含 Week 6 遗留的 verify_module* / demo_agent）
+            if rel == "scripts" or rel.startswith("scripts/"):
+                if fname not in _script_allowlist:
+                    continue
             full = os.path.join(dirpath, fname)
             arcname = os.path.relpath(full, root).replace("\\", "/")
             zf.write(full, arcname)
