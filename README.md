@@ -108,7 +108,7 @@ Jina Reader 无需 Key（`https://r.jina.ai/{url}` 零配置）。
 
 ## 部署地址
 
-线上演示: https://<your-service>.onrender.com  <!-- TODO: 填入实际 Render URL -->
+线上演示: https://week7-research-agent.onrender.com
 
 ## 测试
 
